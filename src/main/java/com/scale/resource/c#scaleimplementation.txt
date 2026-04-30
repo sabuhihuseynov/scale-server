@@ -1,0 +1,643 @@
+namespace MKT.Utils.SerialComm
+{
+ 
+	internal delegate void ReceiveChar(char Value);
+	public delegate void ReceiveString(string Value);
+	/// <summary>
+	/// Summary description for SerialCommBase.
+	/// </summary>	/// 
+	internal class SerialCommBase : CommBase
+	{
+		private MKT.Utils.SerialComm.CommBase.CommBaseSettings cs;
+		private string comString = "";
+ 
+		public event ReceiveChar OnReceiveChar;
+		public event ReceiveString OnReceiveString;
+ 
+		protected override void OnRxChar(byte ch)
+		{
+			try
+			{
+				if ((char)ch != '\r' & (char)ch != '\n')
+				{
+					comString += (char)ch;
+				}
+				else
+				{
+					if (comString.Length > 0 & OnReceiveString != null) { OnReceiveString(comString); }
+					comString = "";
+				}
+				if (OnReceiveChar != null) { OnReceiveChar((char)ch); }
+			}
+			catch
+			{
+ 
+			}
+		}
+ 
+		protected override MKT.Utils.SerialComm.CommBase.CommBaseSettings CommSettings()
+		{
+			return cs;
+		}
+ 
+		public SerialCommBase(string Port, int Baud)
+		{
+			//
+			// TODO: Add constructor logic here
+			//
+			cs = new CommBaseSettings();
+			cs.port = Port;
+			cs.baudRate = Baud;
+			cs.rxQueue = 1024;
+			cs.txQueue = 1024;
+			//			cs.SetStandard(Port, Baud, Handshake.none);
+ 
+		}
+ 
+		public void WriteByte(byte tosend)
+		{
+			//this.SendImmediate(tosend);
+			this.Send(tosend);
+		}
+ 
+	}
+ 
+ 
+	public class BarCodeReaderInt1
+	{
+ 
+		private SerialCommBase Com1;
+ 
+		public event ReceiveString OnBarCodeValue;
+		public BarCodeReaderInt1()
+		{
+			Com1 = new SerialCommBase("COM1", 9600);
+			Com1.OnReceiveString += new ReceiveString(Com1_OnReceiveString);
+			Com1.Open();
+		}
+ 
+		~BarCodeReaderInt1() { Close(); }
+ 
+		public void Close()
+		{
+			Com1.Close();
+		}
+ 
+		private void Com1_OnReceiveString(string Value)
+		{
+			try
+			{
+				if (OnBarCodeValue != null) { OnBarCodeValue(Value); }
+			}
+			catch { }
+		}
+	}
+ 
+ 
+	abstract class ScaleReaderInt
+	{
+		public delegate void WeightRecieved(int Weight);
+		public virtual event WeightRecieved OnWeightRecieved;
+ 
+		public abstract void Close();
+		public abstract void BeginScale();
+		public abstract void EndScale();
+		public abstract void SendGreen();
+		public abstract void SendZero();
+		public abstract void SendRed();
+ 
+	}
+ 
+	internal class ScaleReaderInt1 : ScaleReaderInt
+	{
+		public override event WeightRecieved OnWeightRecieved;
+		private string Packet = "";
+		private SerialCommBase Com1;
+		System.Timers.Timer tm;
+ 
+		public ScaleReaderInt1()
+		{
+			Com1 = new SerialCommBase("COM1", 9600);
+			Com1.OnReceiveString += new ReceiveString(Com1_OnReceiveString);
+			Com1.Open();
+			tm = new System.Timers.Timer(500);
+			tm.Enabled = false;
+			tm.Elapsed += new System.Timers.ElapsedEventHandler(tm_Elapsed);
+			//
+			// TODO: Add constructor logic here
+			//
+		}
+ 
+		~ScaleReaderInt1() { Close(); }
+ 
+		public override void Close()
+		{
+			EndScale();
+		}
+ 
+		public override void BeginScale()
+		{
+			tm.Enabled = true;
+			Packet = "";
+			Com1.Open();
+		}
+ 
+		public override void EndScale()
+		{
+			tm.Enabled = false;
+			if (Com1.Online)
+			{
+				Com1.Close();
+			}
+			Packet = "";
+		}
+ 
+ 
+		private void tm_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
+		{
+			Packet = "";
+			Com1.WriteByte(1);
+		}
+ 
+ 
+ 
+		public override void SendGreen()
+		{
+			PortAccess.Output(PortAccess.data, 0);
+			PortAccess.Output(PortAccess.data, 2);
+		}
+ 
+		public override void SendRed()
+		{
+			PortAccess.Output(PortAccess.data, 0);
+			PortAccess.Output(PortAccess.data, 1);
+		}
+ 
+		public override void SendZero()
+		{
+			PortAccess.Output(PortAccess.data, 0);
+			PortAccess.Output(PortAccess.data, 4);//4
+			System.Threading.Thread.Sleep(100);
+			PortAccess.Output(PortAccess.data, 0);
+		}
+ 
+		private void Com1_OnReceiveString(string Value)
+		{
+			try
+			{
+				tm.Enabled = false;
+				Packet = Packet + Value;
+ 
+				if (Packet.Length == 20)
+				{
+					//				this.Packet="ST,GS,?,  110.9  kg\n\r";
+					double weight = 0;
+ 
+ 
+					try
+					{
+						if (Packet.Substring(0, 2).ToUpper() == "ST")
+						{
+							weight = double.Parse(Packet.Substring(9, 8).Trim().Replace(".", System.Globalization.NumberFormatInfo.CurrentInfo.CurrencyDecimalSeparator));
+						}
+						else
+						{
+							weight = 0;
+						}
+					}
+					catch
+					{
+						weight = 0;
+					}
+ 
+					if (OnWeightRecieved != null) OnWeightRecieved((int)weight);
+				}
+			}
+			finally
+			{
+				tm.Enabled = true;
+			}
+		}
+	}
+ 
+ 
+	public class ScaleReaderNew
+	{
+		static int Version = 1;
+		private static ScaleReaderInt CommManager = null;
+ 
+		public ScaleReaderNew()
+		{
+			if (Version == 1)
+				CommManager = new ScaleReaderInt1();
+		}
+ 
+		~ScaleReaderNew() { CommManager.Close(); }
+ 
+		public static void SendZero()
+		{
+			CommManager.SendZero();
+		}
+		public static void SendRed()
+		{
+			CommManager.SendRed();
+		}
+		public static void SendGreen()
+		{
+			CommManager.SendGreen();
+		}
+ 
+		public static void EndScale()
+		{
+			CommManager.EndScale();
+		}
+ 
+		public static void BeginScale()
+		{
+			CommManager.BeginScale();
+		}
+ 
+		public static void Close()
+		{
+			CommManager.Close();
+		}
+	}
+ 
+}
+
+using log4net.Repository.Hierarchy;
+using System;
+using System.IO.Ports;
+using System.Text;
+using System.Threading;
+using System.Windows.Forms;
+ 
+namespace MKT.Utils.DB
+{
+	public class CommPort
+	{
+		private static SerialPort com1 = new SerialPort(ConnectionManager.ComPortNumber, 9600, Parity.None, 8);
+ 
+		public delegate void ComPortString(string ComValue);
+		private static ComPortString OnConPortStringStorage;
+		static CommPort()
+		{
+			try
+			{
+				com1.Encoding = Encoding.ASCII;
+				com1.StopBits = System.IO.Ports.StopBits.One;
+				com1.DataReceived += new System.IO.Ports.SerialDataReceivedEventHandler(com1_DataReceived);
+				comOpen();
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "CommPort");
+			}
+		}
+ 
+		static void com1_DataReceived(object sender, System.IO.Ports.SerialDataReceivedEventArgs e)
+		{
+			try
+			{
+				lock (com1)
+				{
+					string ComValue = "";
+ 
+					if (ConnectionManager.IndicatorType == 5)
+					{
+						Thread.Sleep(300);
+ 
+						ComValue = com1.ReadExisting();
+					}
+					else
+					{
+						ComValue = com1.ReadLine();
+						ComValue = ComValue.Replace("\r", "");
+						ComValue = ComValue.Replace("\n", "");
+					}
+ 
+ 
+					if (OnConPortStringStorage != null)
+					{
+						OnConPortStringStorage(ComValue);
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "com1_DataReceived");
+			}
+ 
+		}
+ 
+		public static void comOpen()
+		{
+			try
+			{
+				com1.Open();
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "comOpen");
+			}
+		}
+ 
+		public static bool isOpen()
+		{
+			try
+			{
+				return com1.IsOpen;
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "comOpen");
+				return false;
+			}
+		}
+ 
+		public static void Close()
+		{
+			/*if (comThread.IsAlive)
+                comThread.Abort();*/
+			//com1.Dispose();
+			/*System.Threading.Thread.Sleep(200);
+            if (com1.IsOpen)
+            {
+                com1.Close();
+            }*/
+		}
+ 
+		public static event ComPortString OnConPortString
+		{
+			add
+			{
+				OnConPortStringStorage += value;
+				//eventTable["Event1"] = (MyDelegate1)eventTable["Event1"] + value;
+			}
+			remove
+			{
+				OnConPortStringStorage -= value;
+				//eventTable["Event1"] = (MyDelegate1)eventTable["Event1"] - value; 
+			}
+		}
+ 
+		public static void Write(byte Data)
+		{
+			try
+			{
+				com1.Write(new byte[1] { Data }, 0, 1);
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "Write-Byte");
+			}
+		}
+ 
+		public static void Write(string Data)
+		{
+			try
+			{
+				com1.Write(Data);
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "Write-String");
+			}
+		}
+		public static bool BufferHasData
+		{
+ 
+			get
+			{
+				try
+				{
+					return (com1.BytesToWrite > 0);
+				}
+				catch (Exception ex)
+				{
+					ConnectionManager.logger.Error(ex, "BufferHasData");
+					return false;
+				}
+ 
+			}
+		}
+	}
+ 
+	public class ScaleReader
+	{
+		public static int Version = ConnectionManager.IndicatorType;
+		private static System.Threading.Thread ScaleThread;
+		private static bool ScaleThreadContinue = true;
+ 
+ 
+		public static void StartScale()
+		{
+			System.Threading.ThreadStart td = new System.Threading.ThreadStart(Scaling);
+			ScaleThread = new System.Threading.Thread(td);
+			ScaleThread.Priority = System.Threading.ThreadPriority.Lowest;
+			ScaleThread.Start();
+		}
+ 
+		public static void Scaling()
+		{
+			try
+			{
+				while (ScaleThreadContinue)
+				{
+					if (ScaleThread.ThreadState == System.Threading.ThreadState.Running)
+					{
+						if (!CommPort.isOpen())
+							CommPort.comOpen();
+ 
+						if (!CommPort.BufferHasData)
+						{
+							if (Version == 1)
+							{
+								CommPort.Write(1);
+							}
+							else
+								CommPort.Write("01RW\r");
+ 
+							System.Threading.Thread.Sleep(500);
+						}
+					}
+				}
+				ScaleThreadContinue = true;
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "Scaling");
+			}
+ 
+		}
+ 
+		public static void StopScale()
+		{
+			ScaleThreadContinue = false;
+		}
+ 
+ 
+		public static int ParseWeight(string Packet)
+		{
+			if (Packet.Length < 20)
+				return 0;
+ 
+			//				this.Packet="ST,GS,?,  110.9  kg\n\r";
+			try
+			{
+				if (ConnectionManager.IndicatorType == 5)
+				{
+ 
+					Packet = Packet.Substring(Packet.IndexOf('!') - 1);
+					char[] karakterler = Packet.ToCharArray(0, 21);
+					if (karakterler[0] == System.Convert.ToChar(2) && karakterler[20] == System.Convert.ToChar(13))
+						return Convert.ToInt32(ConnectionManager.ConvertToDouble(Packet.Substring(5, 6)) * ConnectionManager.ScaleToKq);
+ 
+					return 0;
+ 
+				}
+				else
+				{
+ 
+					if (Packet.Substring(0, 2).ToUpper() == "ST")
+					{
+						return (int)(double.Parse(Packet.Substring(9, 8).Trim().Replace(".", System.Globalization.NumberFormatInfo.CurrentInfo.CurrencyDecimalSeparator)) * ConnectionManager.ScaleToKq);
+						//Sirvan return (int)(double.Parse(Packet.Substring(9, 9).Trim().Replace(".", System.Globalization.NumberFormatInfo.CurrentInfo.CurrencyDecimalSeparator)) * 1000);
+					}
+					else
+					{
+						return 0;
+					}
+				}
+ 
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "ParseWeight (" + Packet.ToString() + ")");
+				return 0;
+			}
+ 
+			//if (OnWeightRecieved!=null) OnWeightRecieved((int)weight);
+			//}
+			//else
+			//{
+			//    return 0;
+			//}
+		}
+ 
+ 
+		public static double ParseWeightTextile(string Packet)
+		{
+			if (Packet.Length >= 5)
+			{
+				try
+				{
+					return double.Parse(Packet.Trim().Replace(".", System.Globalization.NumberFormatInfo.CurrentInfo.CurrencyDecimalSeparator));
+				}
+				catch
+				{
+					return 0;
+				}
+ 
+			}
+			else
+			{
+				return 0;
+			}
+		}
+ 
+ 
+		//public static int ParseWeightOther(string Packet)
+		//{
+		//    try
+		//    {
+ 
+		//        if (Packet != null)
+		//        {
+		//            if (Packet.Substring(0, 1).ToUpper() == "+")
+		//            {
+		//                return (int)double.Parse(Packet.Substring(1, 6).Replace("\r", "").Trim().Replace(".", System.Globalization.NumberFormatInfo.CurrentInfo.CurrencyDecimalSeparator));
+		//            }
+		//            else if (Packet.Length > 0)
+		//            {
+		//                try
+		//                {
+		//                    return (int)double.Parse(Packet.Replace("\r", "").Trim().Replace(".", System.Globalization.NumberFormatInfo.CurrentInfo.CurrencyDecimalSeparator));
+		//                }
+		//                catch
+		//                {
+		//                    return 0;
+		//                }
+		//            }
+		//            else
+		//            {
+		//                return 0;
+		//            }
+		//        }
+		//        else
+		//        {
+		//            return 0;
+		//        }
+		//    }
+		//    catch
+		//    {
+		//        return 0;
+		//    }
+ 
+		//}
+ 
+ 
+		public static void SendGreen()
+		{
+			PortAccess.Output(PortAccess.data, 0);
+			PortAccess.Output(PortAccess.data, 2);
+		}
+ 
+		public static void SendRed()
+		{
+			PortAccess.Output(PortAccess.data, 0);
+			PortAccess.Output(PortAccess.data, 1);
+		}
+ 
+		public static void SendZero()
+		{
+			try
+			{
+				if (Version == 1)
+				{
+					PortAccess.Output(PortAccess.data, 0);
+					PortAccess.Output(PortAccess.data, 4);//4
+					System.Threading.Thread.Sleep(100);
+					PortAccess.Output(PortAccess.data, 0);
+				}
+				else
+				{
+					CommPort.OnConPortString += new CommPort.ComPortString(CommPort_WaitZero);
+					CommPort.Write("01RW\r");
+				}
+ 
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "SendZero");
+			}
+ 
+		}
+ 
+		static void CommPort_WaitZero(string ComValue)
+		{
+			try
+			{
+				CommPort.OnConPortString -= CommPort_WaitZero;
+				if (ParseWeight(ComValue) < 100)
+					CommPort.Write("01MZ\r");
+			}
+			catch (Exception ex)
+			{
+				ConnectionManager.logger.Error(ex, "CommPort_WaitZero");
+			}
+		}
+ 
+ 
+	}
+}
