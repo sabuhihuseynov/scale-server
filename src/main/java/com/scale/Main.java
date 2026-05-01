@@ -10,7 +10,10 @@ import com.scale.serial.ScaleReader;
 import com.scale.server.SseServer;
 import com.scale.ui.StatusWindow;
 
+import java.awt.GraphicsEnvironment;
 import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
+import javafx.application.Platform;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
@@ -23,7 +26,7 @@ import java.util.logging.*;
  * Wiring:
  *   ScaleReader  →  (onWeight / onStatus callback)
  *       ↓
- *   StatusWindow  — live Swing status display for the operator
+ *   StatusWindow  — live JavaFX status display for the operator
  *   SseServer.publish(JSON)  →  frontend app receives SSE events
  * <p>
  * Usage:
@@ -41,19 +44,26 @@ public final class Main {
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
 
     public static void main(String[] args) throws Exception {
-        // Config must load first so the debug flag is available for logging setup.
-        // AppConfig's own load message uses the default JUL handler for one line — acceptable.
         AppConfig config = AppConfig.load();
         setupLogging(config.debug);
         Logger log = Logger.getLogger(Main.class.getName());
 
         log.info("=".repeat(55));
         log.info("Weighbridge Scale Server  (single-client mode)");
-        log.info("  " + config);
         log.info("=".repeat(55));
 
-        // ── Show status window (before port scan so operator sees something) ──
-        StatusWindow window = new StatusWindow();
+        // ── Show config/status window; block until operator clicks Start ──────
+        StatusWindow window = createWindow(config, log);
+        if (window != null) {
+            StatusWindow.Selection sel = window.awaitSelection();
+            if (sel != null) {
+                config = config.withUiSettings(sel.port(), sel.indicatorType(), sel.debug());
+                setupLogging(config.debug);
+            }
+        }
+
+        log.info("  " + config);
+        log.info("=".repeat(55));
 
         // ── Resolve device name ───────────────────────────────────────────────
         String deviceName = config.deviceName.isEmpty()
@@ -72,7 +82,7 @@ public final class Main {
 
         // ── Create components ─────────────────────────────────────────────────
         SseServer sseServer = new SseServer(config.httpPort);
-        sseServer.onClientChange = window::updateClient;
+        if (window != null) sseServer.onClientChange = window::updateClient;
 
         ScaleReader scaleReader = new ScaleReader(
                 resolvedPort,
@@ -91,7 +101,7 @@ public final class Main {
         };
 
         scaleReader.onStatus = connected -> {
-            window.updateScale(connected, resolvedPort);
+            if (window != null) window.updateScale(connected, resolvedPort);
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("type",      "status");
             payload.put("device",    deviceName);
@@ -203,12 +213,6 @@ public final class Main {
         console.setFormatter(fmt);
         root.addHandler(console);
 
-        // Permanent rolling log — INFO and above, rotates at 5 MB, 3 files kept.
-        FileHandler operational = new FileHandler("scale_server_%g.log", 5 * 1024 * 1024, 3, true);
-        operational.setLevel(Level.INFO);
-        operational.setFormatter(fmt);
-        root.addHandler(operational);
-
         if (debug) {
             // Temporary debug log — FINE and above, overwritten on every run.
             // Contains raw byte traces and packet details useful during testing.
@@ -220,9 +224,10 @@ public final class Main {
         }
 
         Logger.getLogger("com.fazecast.jSerialComm").setLevel(Level.WARNING);
-
-        Logger.getLogger(Main.class.getName())
-                .info("Operational log: scale_server_0.log (rotates at 5 MB, 3 files kept)");
+        // JavaFX warns about running from an unnamed module (fat JAR / classpath).
+        // The app works correctly — this is a cosmetic advisory from the FX runtime.
+        Logger.getLogger("javafx").setLevel(Level.SEVERE);
+        Logger.getLogger("com.sun.javafx").setLevel(Level.SEVERE);
     }
 
     private static Formatter buildFormatter() {
@@ -254,6 +259,31 @@ public final class Main {
     // ─────────────────────────────────────────────────────────────────────────
     // Utility
     // ─────────────────────────────────────────────────────────────────────────
+
+    private static StatusWindow createWindow(AppConfig config, Logger log) {
+        if (GraphicsEnvironment.isHeadless()) {
+            log.info("No display available — running without status window");
+            return null;
+        }
+
+        log.info("Opening status window...");
+        try {
+            CountDownLatch latch = new CountDownLatch(1);
+            StatusWindow[] ref = new StatusWindow[1];
+            Platform.startup(() -> {
+                ref[0] = new StatusWindow(config);
+                latch.countDown();
+            });
+            latch.await();
+            return ref[0];
+        } catch (Throwable t) {
+            log.warning("Could not open status window: " + t.getMessage());
+            if (log.isLoggable(Level.FINE)) {
+                log.log(Level.FINE, "Status window error detail", t);
+            }
+            return null;
+        }
+    }
 
     private static String defaultDeviceName(IndicatorType type) {
         return switch (type) {

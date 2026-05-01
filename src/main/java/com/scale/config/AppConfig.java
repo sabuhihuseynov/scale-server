@@ -82,6 +82,22 @@ public final class AppConfig {
     // Construction
     // ─────────────────────────────────────────────────────────────────────────
 
+    private AppConfig(String portName, int baud, IndicatorType indicatorType,
+                      double scaleToKq, int httpPort, String deviceName, boolean debug) {
+        this.portName      = portName;
+        this.baud          = baud;
+        this.indicatorType = indicatorType;
+        this.scaleToKq     = scaleToKq;
+        this.httpPort      = httpPort;
+        this.deviceName    = deviceName;
+        this.debug         = debug;
+    }
+
+    /** Returns a copy with the three UI-selectable fields overridden. */
+    public AppConfig withUiSettings(String port, IndicatorType type, boolean debugMode) {
+        return new AppConfig(port, baud, type, scaleToKq, httpPort, deviceName, debugMode);
+    }
+
     private AppConfig(Properties p) {
         portName = p.getProperty("port", "AUTO").strip();
         baud = parseIntOrDefault(p, "baud", 9600);

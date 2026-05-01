@@ -1,104 +1,210 @@
 package com.scale.ui;
 
-import javax.swing.*;
-import java.awt.*;
+import com.fazecast.jSerialComm.SerialPort;
+import com.scale.config.AppConfig;
+import com.scale.model.IndicatorType;
+import java.util.concurrent.CompletableFuture;
+import java.util.logging.Logger;
+import javafx.application.Platform;
+import javafx.collections.FXCollections;
+import javafx.geometry.Insets;
+import javafx.scene.Scene;
+import javafx.scene.control.Button;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.Separator;
+import javafx.scene.layout.GridPane;
+import javafx.scene.layout.VBox;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.stage.Stage;
 
 /**
- * Small Swing status window shown to the operator.
- * Displays scale serial-port state and frontend client connection state.
- * All public methods are thread-safe — they schedule updates on the EDT.
+ * JavaFX operator window.
+ * Top section: config inputs (port, indicator type, debug).
+ * Bottom section: live scale/client status indicators.
+ * All public methods are thread-safe.
  */
-public final class StatusWindow extends JFrame {
+public final class StatusWindow {
 
-    private static final Color COL_OK   = new Color(0x27AE60);
-    private static final Color COL_ERR  = new Color(0xC0392B);
-    private static final Color COL_WARN = new Color(0xE67E22);
-    private static final Color COL_IDLE = new Color(0x95A5A6);
+    public record Selection(String port, IndicatorType indicatorType, boolean debug) {}
 
-    private final JLabel scaleIndicator;
-    private final JLabel scaleValue;
-    private final JLabel clientIndicator;
-    private final JLabel clientValue;
+    private static final String COL_OK   = "#27AE60";
+    private static final String COL_ERR  = "#C0392B";
+    private static final String COL_WARN = "#E67E22";
+    private static final String COL_IDLE = "#95A5A6";
 
-    public StatusWindow() {
-        super("Scale Server");
+    private final Label scaleIndicator;
+    private final Label scaleValue;
+    private final Label clientIndicator;
+    private final Label clientValue;
+    private final CompletableFuture<Selection> selectionFuture = new CompletableFuture<>();
 
-        try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-        } catch (Exception ignored) { }
+    /** Must be called on the FX Application Thread. */
+    public StatusWindow(AppConfig defaults) {
+        // ── Config inputs ─────────────────────────────────────────────────────
+        SerialPort[] availablePorts = SerialPort.getCommPorts();
 
-        setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setResizable(false);
+        // Only show port selector when the OS reports actual ports.
+        // If none are found, AUTO is used unconditionally.
+        ComboBox<PortItem> portCombo = availablePorts.length > 0
+                ? buildPortCombo(defaults.portName, availablePorts)
+                : null;
 
+        ComboBox<IndicatorType> typeCombo = new ComboBox<>(
+                FXCollections.observableArrayList(IndicatorType.values()));
+        typeCombo.setValue(defaults.indicatorType);
+        typeCombo.setPrefWidth(200);
+
+        CheckBox debugCheck = new CheckBox("Enable debug logging");
+        debugCheck.setSelected(defaults.debug);
+
+        GridPane configGrid = new GridPane();
+        configGrid.setHgap(12);
+        configGrid.setVgap(10);
+        int row = 0;
+        if (portCombo != null) {
+            portCombo.setPrefWidth(200);
+            configGrid.addRow(row++, label("Port"), portCombo);
+        }
+        configGrid.addRow(row++, label("Type"),  typeCombo);
+        configGrid.addRow(row,   label(""),      debugCheck);
+
+        // ── Status indicators (assigned before button action captures them) ─────
         scaleIndicator  = indicator();
-        scaleValue      = value("Connecting...");
+        scaleValue      = value("Waiting to start...");
         clientIndicator = indicator();
         clientValue     = value("No client connected");
 
-        JPanel panel = new JPanel(new GridBagLayout());
-        panel.setBorder(BorderFactory.createEmptyBorder(18, 24, 18, 32));
+        Button startBtn = new Button("Start");
+        startBtn.setDefaultButton(true);
+        startBtn.setMaxWidth(Double.MAX_VALUE);
 
-        GridBagConstraints c = new GridBagConstraints();
-        c.anchor = GridBagConstraints.WEST;
+        startBtn.setOnAction(e -> {
+            String port = portCombo != null ? portCombo.getValue().portName() : "AUTO";
+            selectionFuture.complete(new Selection(port, typeCombo.getValue(), debugCheck.isSelected()));
+            if (portCombo != null) portCombo.setDisable(true);
+            typeCombo.setDisable(true);
+            debugCheck.setDisable(true);
+            startBtn.setDisable(true);
+            scaleValue.setText("Connecting...");
+        });
 
-        addRow(panel, c, 0, "Scale",  scaleIndicator,  scaleValue);
-        addRow(panel, c, 1, "Client", clientIndicator, clientValue);
+        GridPane statusGrid = new GridPane();
+        statusGrid.setHgap(10);
+        statusGrid.setVgap(8);
+        statusGrid.addRow(0, bold("Scale"),  scaleIndicator,  scaleValue);
+        statusGrid.addRow(1, bold("Client"), clientIndicator, clientValue);
 
-        getContentPane().add(panel);
-        pack();
-        setMinimumSize(getSize());
-        setLocationRelativeTo(null);
-        setVisible(true);
+        // ── Layout ────────────────────────────────────────────────────────────
+        VBox root = new VBox(14, configGrid, startBtn, new Separator(), statusGrid);
+        root.setPadding(new Insets(20, 24, 20, 24));
+        root.setMinWidth(360);
+
+        Stage stage = new Stage();
+        stage.setTitle("Scale Server");
+        stage.setResizable(false);
+        stage.setScene(new Scene(root));
+        stage.setOnCloseRequest(e -> System.exit(0));
+        stage.show();
+
+        Logger.getLogger(StatusWindow.class.getName()).info("StatusWindow is now visible");
+    }
+
+    /** Blocks the calling thread until the user clicks Start. */
+    public Selection awaitSelection() {
+        try {
+            return selectionFuture.get();
+        } catch (Exception e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
     }
 
     public void updateScale(boolean connected, String port) {
-        SwingUtilities.invokeLater(() -> {
-            if (connected) {
-                scaleIndicator.setForeground(COL_OK);
-                scaleValue.setText("Connected on " + port);
-            } else {
-                scaleIndicator.setForeground(COL_ERR);
-                scaleValue.setText("Disconnected — check serial cable");
-            }
+        Platform.runLater(() -> {
+            setColor(scaleIndicator, connected ? COL_OK : COL_ERR);
+            scaleValue.setText(connected
+                    ? "Connected on " + port
+                    : "Disconnected — check serial cable");
         });
     }
 
     public void updateClient(boolean connected) {
-        SwingUtilities.invokeLater(() -> {
-            if (connected) {
-                clientIndicator.setForeground(COL_OK);
-                clientValue.setText("Frontend connected");
-            } else {
-                clientIndicator.setForeground(COL_WARN);
-                clientValue.setText("No client connected");
-            }
+        Platform.runLater(() -> {
+            setColor(clientIndicator, connected ? COL_OK : COL_WARN);
+            clientValue.setText(connected ? "Frontend connected" : "No client connected");
         });
     }
 
-    private static void addRow(JPanel p, GridBagConstraints c, int row,
-                                String title, JLabel ind, JLabel val) {
-        c.gridy = row;
-        c.gridx = 0; c.insets = new Insets(6, 0, 6, 14); p.add(header(title), c);
-        c.gridx = 1; c.insets = new Insets(6, 0, 6,  8); p.add(ind, c);
-        c.gridx = 2; c.insets = new Insets(6, 0, 6,  0); p.add(val, c);
+    // ── Port item — separates display label from the port name passed to config ──
+
+    private record PortItem(String portName, String label) {
+
+        static PortItem auto() {
+            return new PortItem("AUTO", "AUTO — scan all ports");
+        }
+
+        static PortItem of(SerialPort p) {
+            String sys  = p.getSystemPortName();
+            // Linux: sys = "ttyUSB0" — add /dev/ prefix so scale.properties format matches
+            String name = (!sys.startsWith("COM") && !sys.startsWith("/")) ? "/dev/" + sys : sys;
+            // Strip redundant "(COMx)" suffix Windows appends to descriptive names
+            String desc = p.getDescriptivePortName()
+                    .replaceAll("\\s*\\([^)]*\\)\\s*$", "").trim();
+            String lbl  = (desc.isEmpty() || desc.equalsIgnoreCase(sys))
+                    ? name : name + " — " + desc;
+            return new PortItem(name, lbl);
+        }
+
+        @Override public String toString() { return label; }
     }
 
-    private static JLabel header(String text) {
-        JLabel l = new JLabel(text);
-        l.setFont(l.getFont().deriveFont(Font.BOLD, 13f));
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static ComboBox<PortItem> buildPortCombo(String current, SerialPort[] ports) {
+        var items = FXCollections.<PortItem>observableArrayList(PortItem.auto());
+        int selectIdx = 0;
+        for (int i = 0; i < ports.length; i++) {
+            PortItem item = PortItem.of(ports[i]);
+            items.add(item);
+            if (item.portName().equals(current)) selectIdx = i + 1;
+        }
+        var combo = new ComboBox<>(items);
+        // Explicit button cell prevents blank display with custom item types
+        combo.setButtonCell(new javafx.scene.control.ListCell<>() {
+            @Override protected void updateItem(PortItem item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? "" : item.label());
+            }
+        });
+        combo.getSelectionModel().select(selectIdx);
+        return combo;
+    }
+
+    private static void setColor(Label l, String hex) {
+        l.setStyle("-fx-text-fill: " + hex + ";");
+    }
+
+    private static Label label(String text) { return new Label(text); }
+
+    private static Label bold(String text) {
+        Label l = new Label(text);
+        l.setFont(Font.font(null, FontWeight.BOLD, 13));
         return l;
     }
 
-    private static JLabel indicator() {
-        JLabel l = new JLabel("●");   // ●
-        l.setFont(l.getFont().deriveFont(16f));
-        l.setForeground(COL_IDLE);
+    private static Label indicator() {
+        Label l = new Label("●");
+        l.setFont(Font.font(16));
+        l.setStyle("-fx-text-fill: " + COL_IDLE + ";");
         return l;
     }
 
-    private static JLabel value(String text) {
-        JLabel l = new JLabel(text);
-        l.setFont(l.getFont().deriveFont(13f));
+    private static Label value(String text) {
+        Label l = new Label(text);
+        l.setFont(Font.font(13));
         return l;
     }
 }

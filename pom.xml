@@ -38,6 +38,38 @@
             <artifactId>gson</artifactId>
             <version>2.10.1</version>
         </dependency>
+
+        <!--
+            JavaFX: status window UI.
+            All three platform classifiers are included so the fat JAR runs on
+            Linux, Windows, and macOS without a separate JavaFX installation.
+            JavaFX is loaded from the classpath (unnamed module), which triggers
+            a cosmetic "Unsupported JavaFX configuration" warning at runtime —
+            that warning is suppressed in Main.setupLogging.
+        -->
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>21</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>21</version>
+            <classifier>linux</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>21</version>
+            <classifier>win</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>21</version>
+            <classifier>mac</classifier>
+        </dependency>
     </dependencies>
 
     <build>
@@ -81,6 +113,7 @@
                     <encoding>UTF-8</encoding>
                 </configuration>
             </plugin>
+
         </plugins>
     </build>
 </project>
