@@ -13,6 +13,7 @@ import com.scale.ui.StatusWindow;
 import java.awt.GraphicsEnvironment;
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 import javafx.application.Platform;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -70,49 +71,10 @@ public final class Main {
                 ? defaultDeviceName(config.indicatorType)
                 : config.deviceName;
 
-        // ── Resolve serial port ───────────────────────────────────────────────
-        // If port = AUTO (default), scan all available ports and use the first
-        // one that responds with a recognised scale packet.
-        // If port is explicitly set (e.g. COM5), skip scanning and connect directly.
-        String resolvedPort = resolvePort(config, log);
-
-        log.info("=".repeat(55));
-        log.info("  Port (resolved): " + resolvedPort);
-        log.info("=".repeat(55));
-
-        // ── Create components ─────────────────────────────────────────────────
+        // ── Start SSE server immediately (frontend can connect before scale is found) ──
         SseServer sseServer = new SseServer(config.httpPort);
         if (window != null) sseServer.onClientChange = window::updateClient;
 
-        ScaleReader scaleReader = new ScaleReader(
-                resolvedPort,
-                config.baud,
-                config.indicatorType,
-                deviceName,
-                config.scaleToKq
-        );
-
-        // ── Wire callbacks directly to SSE server ─────────────────────────────
-
-        scaleReader.onWeight = reading -> {
-            String json = buildWeightJson(reading, resolvedPort);
-            sseServer.publish(json);
-            log.fine("Weight published: " + reading);
-        };
-
-        scaleReader.onStatus = connected -> {
-            if (window != null) window.updateScale(connected, resolvedPort);
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("type",      "status");
-            payload.put("device",    deviceName);
-            payload.put("port",      resolvedPort);
-            payload.put("connected", connected);
-            sseServer.publish(GSON.toJson(payload));
-            log.info("Scale " + (connected ? "connected" : "disconnected")
-                    + " on " + resolvedPort);
-        };
-
-        // ── Start SSE server first (so frontend can connect immediately) ───────
         try {
             sseServer.start();
         } catch (IOException e) {
@@ -121,17 +83,61 @@ public final class Main {
             System.exit(1);
         }
 
-        // ── Start scale reader ────────────────────────────────────────────────
-        scaleReader.start();
-
         log.info("SSE stream : http://localhost:" + config.httpPort + "/stream");
         log.info("Press Ctrl+C to stop.");
+
+        // ── Resolve port and start scale reader in background ─────────────────
+        // Port scanning blocks until a device is found on AUTO mode; running it
+        // on a daemon thread lets the SSE server accept connections in the meantime.
+        final AppConfig finalConfig = config;
+        final String finalDeviceName = deviceName;
+        final AtomicReference<ScaleReader> readerRef = new AtomicReference<>();
+        Thread scaleThread = new Thread(() -> {
+            Logger bgLog = Logger.getLogger(Main.class.getName());
+            String resolvedPort = resolvePort(finalConfig, bgLog);
+
+            bgLog.info("=".repeat(55));
+            bgLog.info("  Port (resolved): " + resolvedPort);
+            bgLog.info("=".repeat(55));
+
+            ScaleReader scaleReader = new ScaleReader(
+                    resolvedPort,
+                    finalConfig.baud,
+                    finalConfig.indicatorType,
+                    finalDeviceName,
+                    finalConfig.scaleToKq
+            );
+
+            scaleReader.onWeight = reading -> {
+                String json = buildWeightJson(reading, resolvedPort);
+                sseServer.publish(json);
+                bgLog.fine("Weight published: " + reading);
+            };
+
+            scaleReader.onStatus = connected -> {
+                if (window != null) window.updateScale(connected, resolvedPort);
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("type",      "status");
+                payload.put("device",    finalDeviceName);
+                payload.put("port",      resolvedPort);
+                payload.put("connected", connected);
+                sseServer.publish(GSON.toJson(payload));
+                bgLog.info("Scale " + (connected ? "connected" : "disconnected")
+                        + " on " + resolvedPort);
+            };
+
+            readerRef.set(scaleReader);
+            scaleReader.start();
+        }, "scale-init");
+        scaleThread.setDaemon(true);
+        scaleThread.start();
 
         // ── Graceful shutdown hook ─────────────────────────────────────────────
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             Logger shutdownLog = Logger.getLogger("shutdown");
             shutdownLog.info("Shutdown signal received — stopping...");
-            scaleReader.stop();
+            ScaleReader r = readerRef.get();
+            if (r != null) r.stop();
             sseServer.stop();
             shutdownLog.info("All components stopped. Goodbye.");
         }, "shutdown-hook"));
