@@ -152,7 +152,6 @@ public final class ScaleReader {
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                log.fine("[" + deviceName + "] poll thread interrupted");
                 break;
             } catch (Exception e) {
                 if (running.get()) {
@@ -178,9 +177,6 @@ public final class ScaleReader {
         WeightReading reading = ScaleProtocol.parse(raw, type, deviceName, scaleToKq);
         if (reading != null) {
             emit(reading);
-        } else {
-            log.fine("[" + deviceName + "] packet discarded (parse returned null): "
-                    + raw.replace("\r", "\\r").replace("\n", "\\n"));
         }
     }
 

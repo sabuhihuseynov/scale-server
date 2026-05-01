@@ -5,11 +5,11 @@ import com.google.gson.GsonBuilder;
 import com.scale.config.AppConfig;
 import com.scale.model.IndicatorType;
 import com.scale.model.WeightReading;
+import com.scale.serial.PortScanner;
 import com.scale.serial.ScaleReader;
-import com.scale.server.Broadcaster;
 import com.scale.server.SseServer;
+import com.scale.ui.StatusWindow;
 
-import java.io.File;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -19,26 +19,21 @@ import java.util.logging.*;
 
 /**
  * Application entry point.
- *
+ * <p>
  * Wiring:
  *   ScaleReader  →  (onWeight / onStatus callback)
  *       ↓
- *   Broadcaster.publish(JSON)
- *       ↓
- *   SseServer   →  connected browser tabs receive SSE events
- *
+ *   StatusWindow  — live Swing status display for the operator
+ *   SseServer.publish(JSON)  →  frontend app receives SSE events
+ * <p>
  * Usage:
  *   java -jar scale-server-1.0.0-jar-with-dependencies.jar
- *
+ * <p>
  * Configuration (optional):
  *   Place scale.properties next to the JAR — see AppConfig for keys.
- *   Default: COM3, 9600 baud, CAS_V1, http port 8080.
- *
- * SSE endpoint:
- *   http://localhost:8080/stream
- *
- * Health check:
- *   http://localhost:8080/health
+ *   Default: AUTO port scan, 9600 baud, CAS_V1, http port 8435.
+ * <p>
+ * SSE endpoint: http://localhost:8435/stream
  */
 public final class Main {
 
@@ -46,51 +41,65 @@ public final class Main {
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
 
     public static void main(String[] args) throws Exception {
-        setupLogging();
+        // Config must load first so the debug flag is available for logging setup.
+        // AppConfig's own load message uses the default JUL handler for one line — acceptable.
+        AppConfig config = AppConfig.load();
+        setupLogging(config.debug);
         Logger log = Logger.getLogger(Main.class.getName());
 
-        // ── Load config ───────────────────────────────────────────────────────
-        AppConfig config = AppConfig.load();
-
         log.info("=".repeat(55));
-        log.info("Weighbridge Scale Server");
+        log.info("Weighbridge Scale Server  (single-client mode)");
         log.info("  " + config);
         log.info("=".repeat(55));
+
+        // ── Show status window (before port scan so operator sees something) ──
+        StatusWindow window = new StatusWindow();
 
         // ── Resolve device name ───────────────────────────────────────────────
         String deviceName = config.deviceName.isEmpty()
                 ? defaultDeviceName(config.indicatorType)
                 : config.deviceName;
 
+        // ── Resolve serial port ───────────────────────────────────────────────
+        // If port = AUTO (default), scan all available ports and use the first
+        // one that responds with a recognised scale packet.
+        // If port is explicitly set (e.g. COM5), skip scanning and connect directly.
+        String resolvedPort = resolvePort(config, log);
+
+        log.info("=".repeat(55));
+        log.info("  Port (resolved): " + resolvedPort);
+        log.info("=".repeat(55));
+
         // ── Create components ─────────────────────────────────────────────────
-        Broadcaster broadcaster = new Broadcaster();
-        SseServer   sseServer   = new SseServer(config.httpPort, broadcaster);
+        SseServer sseServer = new SseServer(config.httpPort);
+        sseServer.onClientChange = window::updateClient;
 
         ScaleReader scaleReader = new ScaleReader(
-                config.portName,
+                resolvedPort,
                 config.baud,
                 config.indicatorType,
                 deviceName,
                 config.scaleToKq
         );
 
-        // ── Wire callbacks ─────────────────────────────────────────────────────
+        // ── Wire callbacks directly to SSE server ─────────────────────────────
 
         scaleReader.onWeight = reading -> {
-            // Publish weight event to all SSE clients
-            String json = buildWeightJson(reading);
-            broadcaster.publish(json);
+            String json = buildWeightJson(reading, resolvedPort);
+            sseServer.publish(json);
             log.fine("Weight published: " + reading);
         };
 
         scaleReader.onStatus = connected -> {
-            // Publish connection status change
+            window.updateScale(connected, resolvedPort);
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("type",      "status");
             payload.put("device",    deviceName);
+            payload.put("port",      resolvedPort);
             payload.put("connected", connected);
-            broadcaster.publish(GSON.toJson(payload));
-            log.info("Scale " + (connected ? "connected" : "disconnected"));
+            sseServer.publish(GSON.toJson(payload));
+            log.info("Scale " + (connected ? "connected" : "disconnected")
+                    + " on " + resolvedPort);
         };
 
         // ── Start SSE server first (so frontend can connect immediately) ───────
@@ -106,7 +115,6 @@ public final class Main {
         scaleReader.start();
 
         log.info("SSE stream : http://localhost:" + config.httpPort + "/stream");
-        log.info("Health     : http://localhost:" + config.httpPort + "/health");
         log.info("Press Ctrl+C to stop.");
 
         // ── Graceful shutdown hook ─────────────────────────────────────────────
@@ -119,22 +127,53 @@ public final class Main {
         }, "shutdown-hook"));
 
         // ── Park the main thread — all real work runs on daemon threads ────────
-        // main() itself doesn't loop; we just wait for a shutdown signal.
         Thread.currentThread().join();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Port resolution
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns the serial port to use.
+     * <p>
+     * If {@code config.portName} is "AUTO" (the default), scans all available
+     * serial ports using the configured indicator protocol until a scale is found.
+     * The scan is retried every 5 seconds if no port responds.
+     * <p>
+     * If {@code config.portName} is a specific port name (e.g. "COM5"), it is
+     * returned immediately without scanning.
+     */
+    private static String resolvePort(AppConfig config, Logger log) {
+        if (!config.portName.equalsIgnoreCase("AUTO")) {
+            log.info("Port explicitly configured: " + config.portName + " (skipping scan)");
+            return config.portName;
+        }
+
+        log.info("Port=AUTO — scanning available serial ports for scale device...");
+        String found = null;
+        while (found == null) {
+            found = PortScanner.scan(config.indicatorType, config.baud);
+            if (found == null) {
+                log.warning("No scale port found — retrying in 5 seconds...");
+                try { Thread.sleep(5_000); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return found != null ? found : "UNKNOWN";
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // JSON helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Builds the SSE "weight" event JSON.
-     * Using LinkedHashMap for stable key ordering in the JSON output.
-     */
-    private static String buildWeightJson(WeightReading r) {
+    private static String buildWeightJson(WeightReading r, String port) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("type",       "weight");
         payload.put("device",     r.device);
+        payload.put("port",       port);
         payload.put("weight",     r.weight);
         payload.put("unit",       r.unit);
         payload.put("stable",     r.stable);
@@ -149,16 +188,10 @@ public final class Main {
     // Logging setup
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Configure JUL (java.util.logging) with:
-     *   - Console handler:  INFO and above, clean one-line format
-     *   - File handler:     ALL levels, same format, appended to scale_server.log
-     */
-    private static void setupLogging() throws IOException {
+    private static void setupLogging(boolean debug) throws IOException {
         Logger root = Logger.getLogger("");
         root.setLevel(Level.ALL);
 
-        // Remove the default handler (it uses a verbose format and goes to stderr)
         for (Handler existing : root.getHandlers()) {
             root.removeHandler(existing);
         }
@@ -170,49 +203,48 @@ public final class Main {
         console.setFormatter(fmt);
         root.addHandler(console);
 
-        String logPath = "scale_server.log";
-        FileHandler file = new FileHandler(logPath, /* append */ true);
-        file.setLevel(Level.ALL);
-        file.setFormatter(fmt);
-        root.addHandler(file);
+        // Permanent rolling log — INFO and above, rotates at 5 MB, 3 files kept.
+        FileHandler operational = new FileHandler("scale_server_%g.log", 5 * 1024 * 1024, 3, true);
+        operational.setLevel(Level.INFO);
+        operational.setFormatter(fmt);
+        root.addHandler(operational);
 
-        // Suppress noisy jSerialComm library logs below WARNING
+        if (debug) {
+            // Temporary debug log — FINE and above, overwritten on every run.
+            // Contains raw byte traces and packet details useful during testing.
+            FileHandler debugFile = new FileHandler("scale_debug.log", /* append */ false);
+            debugFile.setLevel(Level.ALL);
+            debugFile.setFormatter(fmt);
+            root.addHandler(debugFile);
+            Logger.getLogger(Main.class.getName()).info("Debug logging enabled → scale_debug.log");
+        }
+
         Logger.getLogger("com.fazecast.jSerialComm").setLevel(Level.WARNING);
 
         Logger.getLogger(Main.class.getName())
-              .info("Log file: " + new File(logPath).getAbsolutePath());
+                .info("Operational log: scale_server_0.log (rotates at 5 MB, 3 files kept)");
     }
 
-    /** Single-line log format: "2025-06-01 12:34:56 [INFO   ] CommPort - message" */
     private static Formatter buildFormatter() {
         return new SimpleFormatter() {
             private static final DateTimeFormatter TS =
-                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
             @Override
             public synchronized String format(LogRecord lr) {
-                // Shorten logger name: "com.scale.serial.CommPort" → "CommPort"
                 String name = lr.getLoggerName();
-                int dot = name.lastIndexOf('.');
-                String shortName = (dot >= 0) ? name.substring(dot + 1) : name;
-
-                String msg = formatMessage(lr);
-                if (lr.getThrown() != null) {
-                    msg += "\n" + throwableToString(lr.getThrown());
-                }
-
-                return String.format("%s [%-7s] %-16s %s%n",
+                String shortName = name.substring(name.lastIndexOf('.') + 1);
+                StringBuilder sb = new StringBuilder();
+                sb.append(String.format("%s [%-7s] %-16s %s%n",
                         TS.format(LocalDateTime.now()),
                         lr.getLevel().getName(),
                         shortName,
-                        msg);
-            }
-
-            private String throwableToString(Throwable t) {
-                StringBuilder sb = new StringBuilder();
-                sb.append(t.getClass().getName()).append(": ").append(t.getMessage());
-                for (StackTraceElement e : t.getStackTrace()) {
-                    sb.append("\n\tat ").append(e);
+                        formatMessage(lr)));
+                if (lr.getThrown() != null) {
+                    Throwable t = lr.getThrown();
+                    sb.append(t.getClass().getName()).append(": ").append(t.getMessage()).append('\n');
+                    for (StackTraceElement e : t.getStackTrace())
+                        sb.append("\tat ").append(e).append('\n');
                 }
                 return sb.toString();
             }

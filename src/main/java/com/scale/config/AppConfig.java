@@ -16,12 +16,17 @@ import java.util.logging.Logger;
  * ─────────────────────────────────────────────────────────────────────────
  * scale.properties keys:
  * <p>
- * port            = COM3          Serial port name (Windows: COMx, Linux: /dev/ttyUSBx)
+ * port            = AUTO          Serial port (COMx or /dev/ttyUSBx).
+ *                                 AUTO (default) scans all available ports at startup
+ *                                 and uses the first one that responds with scale data.
+ *                                 Set to a specific port (e.g. COM5) to skip scanning.
  * baud            = 9600          Baud rate
  * indicator.type  = 1             Protocol type: 1=CAS_V1, 2=CAS_V2, 5=TYPE5
  * scale.to.kq     = 1.0           Weight multiplier (1.0 = already in kg)
- * http.port       = 8080          TCP port for the SSE HTTP server
+ * http.port       = 8435          TCP port for the SSE HTTP server
  * device.name     =               Optional human-readable device label
+ * debug           = false         true = write FINE-level byte/packet traces to
+ *                                 scale_debug.log (overwritten each run, not permanent)
  * ─────────────────────────────────────────────────────────────────────────
  */
 public final class AppConfig {
@@ -66,17 +71,25 @@ public final class AppConfig {
      */
     public final String deviceName;
 
+    /**
+     * When true, FINE-level byte and packet traces are written to scale_debug.log.
+     * The file is overwritten on every run — it is a temporary session capture, not
+     * a permanent log.  Set false (default) in production.
+     */
+    public final boolean debug;
+
     // ─────────────────────────────────────────────────────────────────────────
     // Construction
     // ─────────────────────────────────────────────────────────────────────────
 
     private AppConfig(Properties p) {
-        portName = p.getProperty("port", "COM3");
+        portName = p.getProperty("port", "AUTO").strip();
         baud = parseIntOrDefault(p, "baud", 9600);
         indicatorType = IndicatorType.fromCode(parseIntOrDefault(p, "indicator.type", 1));
         scaleToKq = parseDblOrDefault(p, "scale.to.kq", 1.0);
-        httpPort = parseIntOrDefault(p, "http.port", 8080);
+        httpPort   = parseIntOrDefault(p, "http.port", 8435);
         deviceName = p.getProperty("device.name", "").strip();
+        debug      = Boolean.parseBoolean(p.getProperty("debug", "false").strip());
     }
 
     /**
@@ -128,7 +141,7 @@ public final class AppConfig {
     @Override
     public String toString() {
         return String.format(
-                "AppConfig{port=%s, baud=%d, type=%s(%d), scaleToKq=%.3f, httpPort=%d, device='%s'}",
-                portName, baud, indicatorType, indicatorType.code, scaleToKq, httpPort, deviceName);
+                "AppConfig{port=%s, baud=%d, type=%s(%d), scaleToKq=%.3f, httpPort=%d, device='%s', debug=%b}",
+                portName, baud, indicatorType, indicatorType.code, scaleToKq, httpPort, deviceName, debug);
     }
 }

@@ -184,7 +184,6 @@ public final class CommPort {
 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                log.fine("[" + portName + "] receive thread interrupted");
                 break;
             } catch (Exception e) {
                 if (running.get()) {

@@ -8,293 +8,210 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.logging.Logger;
 
 /**
- * Embedded HTTP server exposing an SSE endpoint for the frontend.
+ * Embedded HTTP server exposing a single SSE endpoint for the frontend app.
  * <p>
  * ─────────────────────────────────────────────────────────────────────────
- * Java 21 virtual threads — WHY they are ideal here:
+ * SINGLE-CLIENT DESIGN
  * <p>
- * SSE connections are long-lived and I/O-bound.  Each connected browser
- * tab holds open an HTTP connection and blocks inside Broadcaster.waitNext()
- * waiting for the next weight reading.
+ * /stream is reserved for one frontend application at a time.
+ * A new connection silently closes the previous one.
  * <p>
- * Platform threads (the old default):
- * - Each consumes ~1 MB of OS stack memory.
- * - The OS scheduler treats them as heavyweight tasks.
- * - 100 browser tabs = 100 MB just for thread stacks.
- * <p>
- * Virtual threads (Java 21 Project Loom):
- * - Start at ~few KB of heap memory; grown on demand.
- * - When a virtual thread blocks (e.g. Condition.await(), OutputStream.write()),
- * the underlying OS ("carrier") thread is immediately freed to run other
- * virtual threads.  No OS thread is wasted while we wait for a client.
- * - Creating/destroying them is cheap (JVM-managed, not OS-managed).
- * - 100 browser tabs might use only 2–4 OS carrier threads under the hood.
- * <p>
- * For our use case this is a perfect fit: the bottleneck is not CPU work
- * (we do almost none), it is blocking on I/O events.  Virtual threads make
- * the "one thread per SSE client" model essentially free.
+ * Why is the lock needed with only one client?
+ * The lock coordinates two threads, not two clients:
+ *   (1) ScaleReader callback thread  → calls publish()
+ *   (2) SSE HTTP handler thread      → blocks in wait() for new data
+ * Without synchronization the handler could miss a notify() or read a
+ * stale payloadSeq.  This is standard producer-consumer; client count
+ * is irrelevant.
  * <p>
  * ─────────────────────────────────────────────────────────────────────────
  * Routes:
- * GET  /stream   → SSE event stream  (text/event-stream)
- * GET  /health   → {"ok":true}       (application/json)
- * OPTIONS *      → CORS preflight    (204 No Content)
- * *              → 404
- * <p>
- * SSE event format:
- * data: <JSON>\n\n          — new weight or status reading
- * : heartbeat\n\n           — keep-alive comment every HEARTBEAT_MS
+ *   GET  /stream   → SSE event stream (for the frontend app only)
+ *   OPTIONS *      → CORS preflight (204)
+ *   *              → 404
  */
 public final class SseServer {
 
     private static final Logger log = Logger.getLogger(SseServer.class.getName());
 
-    /**
-     * Heartbeat interval — keeps TCP connections alive through proxies and firewalls.
-     */
     private static final long HEARTBEAT_MS = 15_000L;
 
-    /**
-     * Health-check body — pre-computed once, reused for every /health request.
-     */
-    private static final byte[] HEALTH_BODY =
-            "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
-
     private final int httpPort;
-    private final Broadcaster broadcaster;
-
     private HttpServer server;
+    private volatile boolean running = false;
 
-    /**
-     * Running flag that SSE handler threads check in their loop condition.
-     * <p>
-     * WHY volatile and not AtomicBoolean?
-     * We only ever write it from stop() (one writer, many readers).
-     * volatile guarantees visibility across threads; the CAS overhead of
-     * AtomicBoolean is unnecessary for a simple boolean flag.
-     */
-    private volatile boolean serverRunning = false;
+    // ── Single-slot pub/sub ──────────────────────────────────────────────────
+    private final Object lock         = new Object();
+    private String       latestPayload = null;
+    private long         payloadSeq    = 0L;
 
-    /**
-     * Counter shown in log messages and optionally in a future admin UI.
-     */
-    private final AtomicInteger clientCount = new AtomicInteger(0);
+    // ── Active SSE client ────────────────────────────────────────────────────
+    private volatile OutputStream activeClient = null;
 
-    public SseServer(int httpPort, Broadcaster broadcaster) {
+    // ── Callback — fired when the frontend client connects / disconnects ──────
+    public volatile Consumer<Boolean> onClientChange;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Constructor
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public SseServer(int httpPort) {
         this.httpPort = httpPort;
-        this.broadcaster = broadcaster;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Publisher (called from ScaleReader callback thread)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public void publish(String json) {
+        synchronized (lock) {
+            latestPayload = json;
+            payloadSeq++;
+            lock.notifyAll();
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Lifecycle
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Bind the TCP port and start accepting HTTP connections.
-     * Throws IOException if the port is already in use (another instance running).
-     */
     public void start() throws IOException {
-        serverRunning = true;
+        running = true;
 
-        server = HttpServer.create(new InetSocketAddress("0.0.0.0", httpPort), 64);
-
-        // ── Virtual-thread executor ────────────────────────────────────────
-        // Executors.newVirtualThreadPerTaskExecutor() is the Java 21 standard
-        // factory that assigns one virtual thread per submitted Runnable.
-        //
-        // The HttpServer calls executor.execute(handler) for each HTTP request.
-        // With this executor, each incoming request (including long-lived SSE
-        // connections) gets its own virtual thread — cheap to create, cheap to
-        // block on I/O, and automatically cleaned up when the handler returns.
-        //
-        // Named factory via Thread.ofVirtual().name("sse-vt-", 0).factory():
-        //   Names threads "sse-vt-0", "sse-vt-1", … so they appear with
-        //   meaningful names in thread dumps and profilers.
-        server.setExecutor(
-                Executors.newThreadPerTaskExecutor(
-                        Thread.ofVirtual()
-                                .name("sse-vt-", 0)   // sequential names: sse-vt-0, sse-vt-1, …
-                                .factory()
-                )
-        );
-
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", httpPort), 4);
         server.createContext("/stream", this::handleStream);
-        server.createContext("/health", this::handleHealth);
-        server.createContext("/", this::handleNotFound);
+        server.createContext("/",       this::handleNotFound);
+
+        server.setExecutor(runnable -> {
+            Thread t = new Thread(runnable, "sse-handler");
+            t.setDaemon(true);
+            t.start();
+        });
 
         server.start();
-        log.info("SSE server started on http://0.0.0.0:" + httpPort);
-        log.info("  Stream : http://localhost:" + httpPort + "/stream");
-        log.info("  Health : http://localhost:" + httpPort + "/health");
+        log.info("HTTP server listening on 127.0.0.1:" + httpPort);
     }
 
-    /**
-     * Stop accepting new connections and wait at most 1 second for in-flight handlers.
-     */
     public void stop() {
-        serverRunning = false;   // SSE loops will see this and exit cleanly
-        if (server != null) {
-            server.stop(1);
-            log.info("SSE server stopped");
-        }
-    }
-
-    /**
-     * Number of currently connected SSE clients.
-     */
-    public int clientCount() {
-        return clientCount.get();
+        running = false;
+        synchronized (lock) { lock.notify(); }
+        if (server != null) { server.stop(1); }
+        log.info("HTTP server stopped");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Route handlers
     // ─────────────────────────────────────────────────────────────────────────
 
-    // ── GET /health ───────────────────────────────────────────────────────────
-
-    private void handleHealth(HttpExchange ex) throws IOException {
-        if (isCorsPreflightRequest(ex)) {
-            sendCorsOptions(ex);
-            return;
-        }
-        Headers h = ex.getResponseHeaders();
-        addCorsHeaders(h);
-        h.set("Content-Type", "application/json");
-        ex.sendResponseHeaders(200, HEALTH_BODY.length);
-        try (OutputStream os = ex.getResponseBody()) {
-            os.write(HEALTH_BODY);
-        }
-    }
-
-    // ── GET /stream (SSE) ─────────────────────────────────────────────────────
-
     /**
-     * Long-lived SSE handler — one virtual thread per connected client.
-     * <p>
-     * sendResponseHeaders(200, -1): the -1 content-length puts the response into
-     * chunked-transfer mode so the client receives each chunk as we flush it.
+     * GET /stream — SSE event stream for the frontend application.
+     * Only one connection at a time; a new request closes the previous one.
      */
     private void handleStream(HttpExchange ex) throws IOException {
-        if (isCorsPreflightRequest(ex)) {
-            sendCorsOptions(ex);
-            return;
+        if (isCorsPreflightRequest(ex)) { sendCorsOptions(ex); return; }
+
+        OutputStream prev = activeClient;
+        if (prev != null) {
+            log.info("New SSE client — closing previous connection");
+            try { prev.close(); } catch (IOException ignored) { }
         }
 
         Headers h = ex.getResponseHeaders();
         addCorsHeaders(h);
-        h.set("Content-Type", "text/event-stream");
-        h.set("Cache-Control", "no-cache");
-        h.set("Connection", "keep-alive");
-        h.set("X-Accel-Buffering", "no");  // disable Nginx response buffering if present
+        h.set("Content-Type",      "text/event-stream");
+        h.set("Cache-Control",     "no-cache");
+        h.set("Connection",        "keep-alive");
+        h.set("X-Accel-Buffering", "no");
 
-        ex.sendResponseHeaders(200, -1);   // -1 = chunked streaming, no fixed content-length
+        ex.sendResponseHeaders(200, -1);
+        log.info("SSE client connected from " + ex.getRemoteAddress());
 
-        int total = clientCount.incrementAndGet();
-        log.info("SSE client connected (total=" + total + ") from " + ex.getRemoteAddress());
-
-        // ── SSE event loop ────────────────────────────────────────────────
-        // This is the core of the SSE connection: block until new data (or
-        // timeout), write the event, flush, repeat.
-        //
-        // The virtual thread running this method parks efficiently inside
-        // Broadcaster.waitNext() (on a Condition.await()) without occupying
-        // a real OS thread — that's the key advantage of virtual threads here.
         try (OutputStream os = ex.getResponseBody()) {
-            long seq = 0L;
-            boolean connected = true;
+            activeClient = os;
+            notifyClientChange(true);
+            long lastSeq = 0L;
 
-            while (connected && serverRunning) {
+            while (running) {
+                String data;
+                long   newSeq;
 
-                // Block until broadcaster has new data or HEARTBEAT_MS elapses.
-                // When the virtual thread parks here, the OS carrier thread is
-                // freed to run other virtual threads (other SSE clients, etc.).
-                Broadcaster.WaitResult result;
-                try {
-                    result = broadcaster.waitNext(seq, HEARTBEAT_MS);
-                } catch (InterruptedException e) {
-                    // Server is shutting down — the thread was interrupted by stop().
-                    // Restore the interrupt flag and exit the loop cleanly.
-                    Thread.currentThread().interrupt();
-                    connected = false;
-                    continue;   // re-check while condition → exits
+                synchronized (lock) {
+                    if (payloadSeq == lastSeq) {
+                        try {
+                            lock.wait(HEARTBEAT_MS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                    data   = (payloadSeq != lastSeq) ? latestPayload : null;
+                    newSeq = payloadSeq;
                 }
 
-                // Prepare the SSE bytes to write.
-                // SSE wire format: "data: <payload>\n\n" or ": <comment>\n\n"
                 byte[] event;
-                if (result.payload() == null) {
-                    // Timeout — no new data in HEARTBEAT_MS.
-                    // Send an SSE comment to prevent proxy/browser from closing
-                    // the connection thinking the server went away.
-                    // Comments are ignored by EventSource but keep the TCP alive.
+                if (data == null) {
                     event = ": heartbeat\n\n".getBytes(StandardCharsets.UTF_8);
                 } else {
-                    // New weight or status reading — send as SSE data event.
-                    // The double newline (\n\n) is the SSE event terminator.
-                    event = ("data: " + result.payload() + "\n\n")
-                            .getBytes(StandardCharsets.UTF_8);
-                    seq = result.seq();   // advance our cursor to this sequence number
+                    event = ("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8);
+                    lastSeq = newSeq;
                 }
 
-                // Write and flush — IOException here means the client closed
-                // the connection (tab closed, browser navigated away, network drop).
-                try {
-                    os.write(event);
-                    os.flush();   // CRITICAL: flush every event individually
-                } catch (IOException e) {
-                    // Client disconnected — this is the normal exit for SSE.
-                    // Setting connected=false exits the while loop without
-                    // re-throwing, giving us a clean shutdown path.
-                    connected = false;
-                }
+                os.write(event);
+                os.flush();
             }
-            // Loop exited normally (either client disconnected or server stopped).
-            // The try-with-resources block closes the OutputStream here.
-        }
 
-        int remaining = clientCount.decrementAndGet();
-        log.info("SSE client disconnected (total=" + remaining + ")");
+        } catch (IOException e) {
+            log.fine("SSE client disconnected: " + e.getMessage());
+        } finally {
+            activeClient = null;
+            notifyClientChange(false);
+            log.info("SSE client session ended");
+        }
     }
 
-    // ── 404 catch-all ─────────────────────────────────────────────────────────
-
     private void handleNotFound(HttpExchange ex) throws IOException {
-        if (isCorsPreflightRequest(ex)) {
-            sendCorsOptions(ex);
-            return;
+        if (isCorsPreflightRequest(ex)) { sendCorsOptions(ex); return; }
+        byte[] body = "404 Not Found\n".getBytes(StandardCharsets.UTF_8);
+        ex.sendResponseHeaders(404, body.length);
+        try (OutputStream os = ex.getResponseBody()) { os.write(body); }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private void notifyClientChange(boolean connected) {
+        Consumer<Boolean> cb = onClientChange;
+        if (cb != null) {
+            try {
+                cb.accept(connected);
+            } catch (Exception e) {
+                log.warning("onClientChange callback threw: " + e.getMessage());
+            }
         }
-        addCorsHeaders(ex.getResponseHeaders());
-        ex.sendResponseHeaders(404, 0);
-        ex.getResponseBody().close();
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // CORS helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Add permissive CORS headers so any local or remote frontend can subscribe.
-     * <p>
-     * In production you may want to replace "*" with the specific frontend origin.
-     */
-    private static void addCorsHeaders(Headers h) {
-        h.set("Access-Control-Allow-Origin", "*");
-        h.set("Access-Control-Allow-Methods", "GET, OPTIONS");
-        h.set("Access-Control-Allow-Headers", "Content-Type");
-    }
-
     private static boolean isCorsPreflightRequest(HttpExchange ex) {
         return "OPTIONS".equalsIgnoreCase(ex.getRequestMethod());
+    }
+
+    private static void addCorsHeaders(Headers h) {
+        h.set("Access-Control-Allow-Origin",  "*");
+        h.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+        h.set("Access-Control-Allow-Headers", "Content-Type");
     }
 
     private static void sendCorsOptions(HttpExchange ex) throws IOException {
         addCorsHeaders(ex.getResponseHeaders());
         ex.sendResponseHeaders(204, -1);
-        ex.getResponseBody().close();
+        ex.close();
     }
 }
