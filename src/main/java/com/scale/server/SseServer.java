@@ -1,72 +1,34 @@
 package com.scale.server;
 
-import com.sun.net.httpserver.Headers;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
-
-import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
+import java.io.*;
+import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.function.Consumer;
 import java.util.logging.Logger;
 
 /**
- * Embedded HTTP server exposing a single SSE endpoint for the frontend app.
- * <p>
- * ─────────────────────────────────────────────────────────────────────────
- * SINGLE-CLIENT DESIGN
- * <p>
- * /stream is reserved for one frontend application at a time.
- * A new connection silently closes the previous one.
- * <p>
- * Why is the lock needed with only one client?
- * The lock coordinates two threads, not two clients:
- *   (1) ScaleReader callback thread  → calls publish()
- *   (2) SSE HTTP handler thread      → blocks in wait() for new data
- * Without synchronization the handler could miss a notify() or read a
- * stale payloadSeq.  This is standard producer-consumer; client count
- * is irrelevant.
- * <p>
- * ─────────────────────────────────────────────────────────────────────────
- * Routes:
- *   GET  /stream   → SSE event stream (for the frontend app only)
- *   OPTIONS *      → CORS preflight (204)
- *   *              → 404
+ * Raw-socket SSE server — replaces com.sun.net.httpserver which cannot
+ * stream responses in JDK 21 (sendResponseHeaders closes body immediately).
  */
 public final class SseServer {
 
     private static final Logger log = Logger.getLogger(SseServer.class.getName());
-
     private static final long HEARTBEAT_MS = 15_000L;
 
     private final int httpPort;
-    private HttpServer server;
+    private ServerSocket serverSocket;
     private volatile boolean running = false;
 
-    // ── Single-slot pub/sub ──────────────────────────────────────────────────
-    private final Object lock         = new Object();
+    private final Object lock      = new Object();
     private String       latestPayload = null;
     private long         payloadSeq    = 0L;
 
-    // ── Active SSE client ────────────────────────────────────────────────────
     private volatile OutputStream activeClient = null;
+    public  volatile Consumer<Boolean> onClientChange;
 
-    // ── Callback — fired when the frontend client connects / disconnects ──────
-    public volatile Consumer<Boolean> onClientChange;
+    public SseServer(int httpPort) { this.httpPort = httpPort; }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Constructor
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public SseServer(int httpPort) {
-        this.httpPort = httpPort;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Publisher (called from ScaleReader callback thread)
-    // ─────────────────────────────────────────────────────────────────────────
-
+    // ── Publisher ─────────────────────────────────────────────────────────────
     public void publish(String json) {
         synchronized (lock) {
             latestPayload = json;
@@ -75,64 +37,111 @@ public final class SseServer {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Lifecycle
-    // ─────────────────────────────────────────────────────────────────────────
-
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
     public void start() throws IOException {
         running = true;
+        serverSocket = new ServerSocket();
+        serverSocket.setReuseAddress(true);
+        serverSocket.bind(new InetSocketAddress("127.0.0.1", httpPort));
 
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", httpPort), 4);
-        server.createContext("/stream", this::handleStream);
-        server.createContext("/",       this::handleNotFound);
+        Thread acceptThread = new Thread(this::acceptLoop, "sse-accept");
+        acceptThread.setDaemon(true);
+        acceptThread.start();
 
-        server.setExecutor(runnable -> {
-            Thread t = new Thread(runnable, "sse-handler");
-            t.setDaemon(true);
-            t.start();
-        });
-
-        server.start();
         log.info("HTTP server listening on 127.0.0.1:" + httpPort);
     }
 
     public void stop() {
         running = false;
-        synchronized (lock) { lock.notify(); }
-        if (server != null) { server.stop(1); }
+        synchronized (lock) { lock.notifyAll(); }
+        try { if (serverSocket != null) serverSocket.close(); } catch (IOException ignored) {}
         log.info("HTTP server stopped");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Route handlers
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Accept loop ───────────────────────────────────────────────────────────
+    private void acceptLoop() {
+        while (running) {
+            try {
+                Socket client = serverSocket.accept();
+                Thread t = new Thread(() -> handleClient(client), "sse-handler");
+                t.setDaemon(true);
+                t.start();
+            } catch (IOException e) {
+                if (running) log.warning("Accept error: " + e.getMessage());
+            }
+        }
+    }
 
-    /**
-     * GET /stream — SSE event stream for the frontend application.
-     * Only one connection at a time; a new request closes the previous one.
-     */
-    private void handleStream(HttpExchange ex) throws IOException {
-        if (isCorsPreflightRequest(ex)) { sendCorsOptions(ex); return; }
+    // ── Per-connection handler ────────────────────────────────────────────────
+    private void handleClient(Socket socket) {
+        try {
+            socket.setTcpNoDelay(true);
+            BufferedReader in  = new BufferedReader(
+                    new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+            OutputStream   out = socket.getOutputStream();
 
+            // Read request line
+            String requestLine = in.readLine();
+            if (requestLine == null) return;
+
+            // Read and discard request headers
+            String h;
+            while ((h = in.readLine()) != null && !h.isEmpty()) {}
+
+            String method = requestLine.split(" ")[0];
+            String path   = requestLine.split(" ").length > 1 ? requestLine.split(" ")[1] : "/";
+
+            // CORS preflight
+            if ("OPTIONS".equalsIgnoreCase(method)) {
+                write(out,
+                        "HTTP/1.1 204 No Content\r\n" +
+                                "Access-Control-Allow-Origin: *\r\n" +
+                                "Access-Control-Allow-Methods: GET, OPTIONS\r\n" +
+                                "Access-Control-Allow-Headers: Content-Type\r\n" +
+                                "Content-Length: 0\r\n\r\n");
+                return;
+            }
+
+            if (path.startsWith("/stream")) {
+                handleStream(out);
+            } else {
+                write(out,
+                        "HTTP/1.1 404 Not Found\r\n" +
+                                "Content-Length: 3\r\n\r\n404");
+            }
+        } catch (IOException ignored) {
+        } finally {
+            try { socket.close(); } catch (IOException ignored) {}
+        }
+    }
+
+    // ── SSE stream ────────────────────────────────────────────────────────────
+    private void handleStream(OutputStream out) {
+        // Close any previous client
         OutputStream prev = activeClient;
         if (prev != null) {
             log.info("New SSE client — closing previous connection");
-            try { prev.close(); } catch (IOException ignored) { }
+            try { prev.close(); } catch (IOException ignored) {}
         }
 
-        Headers h = ex.getResponseHeaders();
-        addCorsHeaders(h);
-        h.set("Content-Type",      "text/event-stream");
-        h.set("Cache-Control",     "no-cache");
-        h.set("Connection",        "keep-alive");
-        h.set("X-Accel-Buffering", "no");
+        try {
+            // Write SSE headers manually — no HttpServer involvement
+            write(out,
+                    "HTTP/1.1 200 OK\r\n" +
+                            "Content-Type: text/event-stream\r\n" +
+                            "Cache-Control: no-cache\r\n" +
+                            "Connection: keep-alive\r\n" +
+                            "Access-Control-Allow-Origin: *\r\n" +
+                            "X-Accel-Buffering: no\r\n" +
+                            "\r\n");
 
-        ex.sendResponseHeaders(200, -1);
-        log.info("SSE client connected from " + ex.getRemoteAddress());
+            activeClient = out;
+            notify(true);
+            log.info("SSE client connected");
 
-        try (OutputStream os = ex.getResponseBody()) {
-            activeClient = os;
-            notifyClientChange(true);
+            // Send immediate comment to flush browser buffer
+            writeEvent(out, ": connected\n\n");
+
             long lastSeq = 0L;
 
             while (running) {
@@ -141,9 +150,8 @@ public final class SseServer {
 
                 synchronized (lock) {
                     if (payloadSeq == lastSeq) {
-                        try {
-                            lock.wait(HEARTBEAT_MS);
-                        } catch (InterruptedException e) {
+                        try { lock.wait(HEARTBEAT_MS); }
+                        catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                             break;
                         }
@@ -152,66 +160,38 @@ public final class SseServer {
                     newSeq = payloadSeq;
                 }
 
-                byte[] event;
-                if (data == null) {
-                    event = ": heartbeat\n\n".getBytes(StandardCharsets.UTF_8);
-                } else {
-                    event = ("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8);
+                if (data != null) {
+                    writeEvent(out, "data: " + data + "\n\n");
                     lastSeq = newSeq;
+                } else {
+                    writeEvent(out, ": heartbeat\n\n");
                 }
-
-                os.write(event);
-                os.flush();
             }
 
         } catch (IOException e) {
             log.fine("SSE client disconnected: " + e.getMessage());
         } finally {
             activeClient = null;
-            notifyClientChange(false);
+            notify(false);
             log.info("SSE client session ended");
         }
     }
 
-    private void handleNotFound(HttpExchange ex) throws IOException {
-        if (isCorsPreflightRequest(ex)) { sendCorsOptions(ex); return; }
-        byte[] body = "404 Not Found\n".getBytes(StandardCharsets.UTF_8);
-        ex.sendResponseHeaders(404, body.length);
-        try (OutputStream os = ex.getResponseBody()) { os.write(body); }
+    private void writeEvent(OutputStream out, String text) throws IOException {
+        out.write(text.getBytes(StandardCharsets.UTF_8));
+        out.flush();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Helpers
-    // ─────────────────────────────────────────────────────────────────────────
+    private void write(OutputStream out, String text) throws IOException {
+        out.write(text.getBytes(StandardCharsets.US_ASCII));
+        out.flush();
+    }
 
-    private void notifyClientChange(boolean connected) {
+    private void notify(boolean connected) {
         Consumer<Boolean> cb = onClientChange;
         if (cb != null) {
-            try {
-                cb.accept(connected);
-            } catch (Exception e) {
-                log.warning("onClientChange callback threw: " + e.getMessage());
-            }
+            try { cb.accept(connected); }
+            catch (Exception e) { log.warning("onClientChange threw: " + e.getMessage()); }
         }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // CORS helpers
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private static boolean isCorsPreflightRequest(HttpExchange ex) {
-        return "OPTIONS".equalsIgnoreCase(ex.getRequestMethod());
-    }
-
-    private static void addCorsHeaders(Headers h) {
-        h.set("Access-Control-Allow-Origin",  "*");
-        h.set("Access-Control-Allow-Methods", "GET, OPTIONS");
-        h.set("Access-Control-Allow-Headers", "Content-Type");
-    }
-
-    private static void sendCorsOptions(HttpExchange ex) throws IOException {
-        addCorsHeaders(ex.getResponseHeaders());
-        ex.sendResponseHeaders(204, -1);
-        ex.close();
     }
 }

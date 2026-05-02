@@ -94,7 +94,8 @@ public final class Main {
         final AtomicReference<ScaleReader> readerRef = new AtomicReference<>();
         Thread scaleThread = new Thread(() -> {
             Logger bgLog = Logger.getLogger(Main.class.getName());
-            String resolvedPort = resolvePort(finalConfig, bgLog);
+            String resolvedPort = "CNCB0";
+//            String resolvedPort = resolvePort(finalConfig, bgLog);
 
             bgLog.info("=".repeat(55));
             bgLog.info("  Port (resolved): " + resolvedPort);
