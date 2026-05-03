@@ -48,8 +48,12 @@ public final class PortScanner {
         log.info("PortScanner: scanning " + ports.length + " port(s) for scale device...");
 
         for (SerialPort p : ports) {
-            log.info("PortScanner: probing " + p.getSystemPortName()
-                    + "  (" + p.getPortDescription() + ")");
+            String desc = p.getPortDescription();
+            if (desc != null && desc.toLowerCase().contains("bluetooth")) {
+                log.fine("PortScanner: skipping " + p.getSystemPortName() + " (Bluetooth)");
+                continue;
+            }
+            log.info("PortScanner: probing " + p.getSystemPortName() + "  (" + desc + ")");
             String hit = probe(p, type, baud);
             if (hit != null) {
                 log.info("PortScanner: scale device found on " + hit);
