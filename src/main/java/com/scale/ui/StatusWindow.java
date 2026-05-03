@@ -57,7 +57,7 @@ public final class StatusWindow {
         typeCombo.setValue(defaults.indicatorType);
         typeCombo.setPrefWidth(200);
 
-        CheckBox debugCheck = new CheckBox("Enable debug logging");
+        CheckBox debugCheck = new CheckBox("Debug rejimi");
         debugCheck.setSelected(defaults.debug);
 
         GridPane configGrid = new GridPane();
@@ -73,11 +73,11 @@ public final class StatusWindow {
 
         // ── Status indicators (assigned before button action captures them) ─────
         scaleIndicator  = indicator();
-        scaleValue      = value("Waiting to start...");
+        scaleValue      = value("Başlanmağı gözləyir...");
         clientIndicator = indicator();
-        clientValue     = value("No client connected");
+        clientValue     = value("Brauzer oxumur");
 
-        Button startBtn = new Button("Start");
+        Button startBtn = new Button("Başla");
         startBtn.setDefaultButton(true);
         startBtn.setMaxWidth(Double.MAX_VALUE);
 
@@ -88,14 +88,14 @@ public final class StatusWindow {
             typeCombo.setDisable(true);
             debugCheck.setDisable(true);
             startBtn.setDisable(true);
-            scaleValue.setText("Connecting...");
+            scaleValue.setText("Tərəziyə qoşulur...");
         });
 
         GridPane statusGrid = new GridPane();
         statusGrid.setHgap(10);
         statusGrid.setVgap(8);
-        statusGrid.addRow(0, bold("Scale"),  scaleIndicator,  scaleValue);
-        statusGrid.addRow(1, bold("Client"), clientIndicator, clientValue);
+        statusGrid.addRow(0, bold("Tərəzi"),   scaleIndicator,  scaleValue);
+        statusGrid.addRow(1, bold("Brauzer"), clientIndicator, clientValue);
 
         // ── Layout ────────────────────────────────────────────────────────────
         VBox root = new VBox(14, configGrid, startBtn, new Separator(), statusGrid);
@@ -103,7 +103,7 @@ public final class StatusWindow {
         root.setMinWidth(360);
 
         Stage stage = new Stage();
-        stage.setTitle("Scale Server");
+        stage.setTitle("Tərəzi Serveri");
         stage.setResizable(false);
         stage.setScene(new Scene(root));
         stage.setOnCloseRequest(e -> System.exit(0));
@@ -126,15 +126,15 @@ public final class StatusWindow {
         Platform.runLater(() -> {
             setColor(scaleIndicator, connected ? COL_OK : COL_ERR);
             scaleValue.setText(connected
-                    ? "Connected on " + port
-                    : "Disconnected — check serial cable");
+                    ? "Tərəziyə qoşuldu — " + port
+                    : "Əlaqə kəsildi — serial kabeli yoxlayın");
         });
     }
 
     public void updateClient(boolean connected) {
         Platform.runLater(() -> {
             setColor(clientIndicator, connected ? COL_OK : COL_WARN);
-            clientValue.setText(connected ? "Frontend connected" : "No client connected");
+            clientValue.setText(connected ? "Brauzer oxuyur" : "Brauzer oxumur");
         });
     }
 
@@ -143,7 +143,7 @@ public final class StatusWindow {
     private record PortItem(String portName, String label) {
 
         static PortItem auto() {
-            return new PortItem("AUTO", "AUTO — scan all ports");
+            return new PortItem("AUTO", "AUTO — bütün portları tara");
         }
 
         static PortItem of(SerialPort p) {
