@@ -147,13 +147,11 @@ public final class StatusWindow {
         }
 
         static PortItem of(SerialPort p) {
-            String sys  = p.getSystemPortName();
-            // Linux: sys = "ttyUSB0" — add /dev/ prefix so scale.properties format matches
-            String name = (!sys.startsWith("COM") && !sys.startsWith("/")) ? "/dev/" + sys : sys;
+            String name  = p.getSystemPortName();
             // Strip redundant "(COMx)" suffix Windows appends to descriptive names
             String desc = p.getDescriptivePortName()
                     .replaceAll("\\s*\\([^)]*\\)\\s*$", "").trim();
-            String lbl  = (desc.isEmpty() || desc.equalsIgnoreCase(sys))
+            String lbl  = (desc.isEmpty() || desc.equalsIgnoreCase(name))
                     ? name : name + " — " + desc;
             return new PortItem(name, lbl);
         }
