@@ -104,6 +104,33 @@
             </plugin>
 
             <plugin>
+                <groupId>com.akathist.maven.plugins.launch4j</groupId>
+                <artifactId>launch4j-maven-plugin</artifactId>
+                <version>2.7.0</version>
+                <executions>
+                    <execution>
+                        <id>l4j-clui</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>launch4j</goal>
+                        </goals>
+                        <configuration>
+                            <headerType>gui</headerType>
+                            <outfile>${project.build.directory}/scale-server.exe</outfile>
+                            <jar>${project.build.directory}/${project.artifactId}-${project.version}-jar-with-dependencies.jar</jar>
+                            <errTitle>Scale Server Error</errTitle>
+                            <classPath>
+                                <mainClass>com.scale.Main</mainClass>
+                            </classPath>
+                            <jre>
+                                <minVersion>21</minVersion>
+                            </jre>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
