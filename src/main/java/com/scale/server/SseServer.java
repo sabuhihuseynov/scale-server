@@ -117,8 +117,13 @@ public final class SseServer {
 
     // ── SSE stream ────────────────────────────────────────────────────────────
     private void handleStream(OutputStream out) {
-        // Close any previous client
-        OutputStream prev = activeClient;
+        // Atomically replace the active client so a concurrent connection never
+        // reads a stale reference between the check and the assignment.
+        OutputStream prev;
+        synchronized (lock) {
+            prev = activeClient;
+            activeClient = out;
+        }
         if (prev != null) {
             log.info("New SSE client — closing previous connection");
             try { prev.close(); } catch (IOException ignored) {}
@@ -135,7 +140,6 @@ public final class SseServer {
                             "X-Accel-Buffering: no\r\n" +
                             "\r\n");
 
-            activeClient = out;
             notify(true);
             log.info("SSE client connected");
 
@@ -171,7 +175,11 @@ public final class SseServer {
         } catch (IOException e) {
             log.fine("SSE client disconnected: " + e.getMessage());
         } finally {
-            activeClient = null;
+            // Only clear activeClient if it still points to this connection;
+            // a newer client may have already replaced it.
+            synchronized (lock) {
+                if (activeClient == out) activeClient = null;
+            }
             notify(false);
             log.info("SSE client session ended");
         }

@@ -119,6 +119,8 @@
                             <outfile>${project.build.directory}/scale-server.exe</outfile>
                             <jar>${project.build.directory}/${project.artifactId}-${project.version}-jar-with-dependencies.jar</jar>
                             <errTitle>Scale Server Error</errTitle>
+
+<!--                            <icon>${project.basedir}/src/main/resources/scale-icon.ico</icon>-->
                             <classPath>
                                 <mainClass>com.scale.Main</mainClass>
                             </classPath>
