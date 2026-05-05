@@ -88,8 +88,9 @@ public final class SseServer {
             String h;
             while ((h = in.readLine()) != null && !h.isEmpty()) {}
 
-            String method = requestLine.split(" ")[0];
-            String path   = requestLine.split(" ").length > 1 ? requestLine.split(" ")[1] : "/";
+            String[] parts = requestLine.split(" ", 3);
+            String method = parts[0];
+            String path   = parts.length > 1 ? parts[1] : "/";
 
             // CORS preflight
             if ("OPTIONS".equalsIgnoreCase(method)) {

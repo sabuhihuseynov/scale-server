@@ -227,11 +227,6 @@ public final class ScaleProtocol {
     }
 
     /**
-     * Extract the lamp-flags byte from a CAS packet (offset 7).
-     * Wrapped in try-catch so a future refactor that relaxes the length check
-     * cannot silently propagate an exception into the receive thread.
-     */
-    /**
      * Extract the weight from a validated Type 5 frame (bytes [5, 11)).
      * Returns {@link Double#NaN} on failure — 0.0 is a valid measurement (empty platform).
      *

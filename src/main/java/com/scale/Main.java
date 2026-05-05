@@ -17,8 +17,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import javafx.application.Platform;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.logging.*;
 
 /**
@@ -94,7 +92,6 @@ public final class Main {
         final AtomicReference<ScaleReader> readerRef = new AtomicReference<>();
         Thread scaleThread = new Thread(() -> {
             Logger bgLog = Logger.getLogger(Main.class.getName());
-//            String resolvedPort = "CNCB0";
             String resolvedPort = resolvePort(finalConfig, bgLog);
 
             bgLog.info("=".repeat(55));
@@ -117,12 +114,8 @@ public final class Main {
 
             scaleReader.onStatus = connected -> {
                 if (window != null) window.updateScale(connected, resolvedPort);
-                Map<String, Object> payload = new LinkedHashMap<>();
-                payload.put("type",      "status");
-                payload.put("device",    finalDeviceName);
-                payload.put("port",      resolvedPort);
-                payload.put("connected", connected);
-                sseServer.publish(GSON.toJson(payload));
+                sseServer.publish(GSON.toJson(
+                        new StatusEvent("status", finalDeviceName, resolvedPort, connected)));
                 bgLog.info("Scale " + (connected ? "connected" : "disconnected")
                         + " on " + resolvedPort);
             };
@@ -183,21 +176,23 @@ public final class Main {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // SSE payload types
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private record WeightEvent(String type, String device, String port,
+                               double weight, String unit, boolean stable,
+                               boolean overload, String weightType, String timestamp) {}
+
+    private record StatusEvent(String type, String device, String port, boolean connected) {}
+
+    // ─────────────────────────────────────────────────────────────────────────
     // JSON helpers
     // ─────────────────────────────────────────────────────────────────────────
 
     private static String buildWeightJson(WeightReading r, String port) {
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("type",       "weight");
-        payload.put("device",     r.device);
-        payload.put("port",       port);
-        payload.put("weight",     r.weight);
-        payload.put("unit",       r.unit);
-        payload.put("stable",     r.stable);
-        payload.put("overload",   r.overload);
-        payload.put("weightType", r.weightType);
-        payload.put("timestamp",  r.timestamp);
-        return GSON.toJson(payload);
+        return GSON.toJson(new WeightEvent(
+                "weight", r.device, port, r.weight, r.unit,
+                r.stable, r.overload, r.weightType, r.timestamp));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
