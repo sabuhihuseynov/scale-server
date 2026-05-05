@@ -11,6 +11,11 @@
     <packaging>jar</packaging>
     <description>Weighbridge scale serial reader with SSE server</description>
 
+    <organization>
+        <name>PRODATA</name>
+    </organization>
+    <inceptionYear>2026</inceptionYear>
+
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
@@ -120,7 +125,7 @@
                             <jar>${project.build.directory}/${project.artifactId}-${project.version}-jar-with-dependencies.jar</jar>
                             <errTitle>Scale Server Error</errTitle>
 
-<!--                            <icon>${project.basedir}/src/main/resources/scale-icon.ico</icon>-->
+                            <icon>${project.basedir}/src/main/resources/truck-scale.ico</icon>
                             <classPath>
                                 <mainClass>com.scale.Main</mainClass>
                             </classPath>

@@ -3,6 +3,7 @@ package com.scale.ui;
 import com.fazecast.jSerialComm.SerialPort;
 import com.scale.config.AppConfig;
 import com.scale.model.IndicatorType;
+import java.io.InputStream;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Logger;
 import javafx.application.Platform;
@@ -14,6 +15,7 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.Separator;
+import javafx.scene.image.Image;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.text.Font;
@@ -107,6 +109,10 @@ public final class StatusWindow {
         stage.setResizable(false);
         stage.setScene(new Scene(root));
         stage.setOnCloseRequest(e -> System.exit(0));
+
+        InputStream icon = StatusWindow.class.getResourceAsStream("/truck-scale.png");
+        if (icon != null) stage.getIcons().add(new Image(icon));
+
         stage.show();
 
         Logger.getLogger(StatusWindow.class.getName()).info("StatusWindow is now visible");
