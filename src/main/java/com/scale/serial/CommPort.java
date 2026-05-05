@@ -48,6 +48,13 @@ public final class CommPort {
      */
     private static final int BURST_SLEEP_MS = 300;
 
+    /**
+     * Pre-allocated receive buffer for burst mode.
+     * Type 5 frames are 21 bytes; at 9600 baud over 300 ms a device can send at most
+     * ~360 bytes, so 512 comfortably covers several frames with room to spare.
+     */
+    private static final int BURST_BUF_SIZE = 512;
+
     private final String portName;
     private final int baud;
     private final IndicatorType type;
@@ -282,6 +289,7 @@ public final class CommPort {
      * The device streams data continuously; we drain the buffer every 300 ms.
      */
     private void readBurst(SerialPort p) throws InterruptedException {
+        byte[] buf = new byte[BURST_BUF_SIZE];
         while (running.get() && p.isOpen()) {
             Thread.sleep(BURST_SLEEP_MS);
 
@@ -290,8 +298,8 @@ public final class CommPort {
                 continue;
             }
 
-            byte[] buf = new byte[available];
-            int read = p.readBytes(buf, available);
+            int toRead = Math.min(available, buf.length);
+            int read = p.readBytes(buf, toRead);
             if (read <= 0) {
                 continue;
             }
