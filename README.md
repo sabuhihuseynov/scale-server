@@ -287,7 +287,7 @@ Offset  Length  Content
   3       2     Weight type: "GS"=gross  "NT"=net
   5       1     ","
   6       1     Device-ID character
-  7       1     Lamp-flags byte (bit-field, decoded to named booleans)
+  7       1     Device-status byte (reserved)
   8       1     ","
   9       8     Weight — right-aligned float, e.g. "  110.900"
   17      2     Unit — e.g. "kg" or "lb"
@@ -295,16 +295,6 @@ Offset  Length  Content
 ```
 
 Example raw packet: `ST,GS,1 ,  110.900kg`
-
-**Lamp flags byte** (offset 7) is decoded bit-by-bit into a `Map<String, Boolean>`:
-
-| Bit | Mask   | Key      | Meaning                        |
-|-----|--------|----------|--------------------------------|
-| 0   | `0x01` | `zero`   | Zero indicator lit             |
-| 1   | `0x02` | `tare`   | Tare indicator lit             |
-| 2   | `0x04` | `net`    | Net weight mode active         |
-| 6   | `0x40` | `hold`   | Hold (frozen reading) active   |
-| 7   | `0x80` | `stable` | Stable indicator lit           |
 
 **Weight extraction** — only `"ST"` (stable) readings carry a real weight value. `"US"` (unstable, truck still moving) and `"OL"` (overload, weight exceeds scale capacity) return `0.0` because their weight fields are undefined.
 
@@ -442,11 +432,7 @@ The `\n\n` double newline is mandatory per the SSE spec — it tells the browser
 | `weightType`| `String`                  | `"gross"` or `"net"`                           |
 | `raw`       | `String`                  | Original packet bytes (for debugging)           |
 | `timestamp` | `String`                  | ISO-8601 instant of when this object was created |
-| `lampFlags` | `Map<String, Boolean>`    | Named indicator lamp states (CAS only)          |
-
 The `timestamp` is set in the constructor via `Instant.now().toString()` — it reflects when the server received and parsed the packet, not when the scale measured it.
-
-`lampFlags` is wrapped in `Collections.unmodifiableMap()` so callers cannot modify the map.
 
 ---
 
@@ -522,14 +508,7 @@ Sent after every successful scale reading (approx. every 500 ms when stable):
   "stable":     true,
   "overload":   false,
   "weightType": "gross",
-  "timestamp":  "2026-05-04T10:23:45.123Z",
-  "lampFlags": {
-    "zero":   false,
-    "tare":   false,
-    "net":    false,
-    "hold":   false,
-    "stable": true
-  }
+  "timestamp":  "2026-05-04T10:23:45.123Z"
 }
 ```
 

@@ -3,8 +3,6 @@ package com.scale.protocol;
 import com.scale.model.IndicatorType;
 import com.scale.model.WeightReading;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
@@ -20,7 +18,7 @@ import java.util.stream.Collectors;
  * 3       2       Weight type: "GS"=gross | "NT"=net
  * 5       1       ","
  * 6       1       Device-ID character
- * 7       1       Lamp-flags byte (bit-field)
+ * 7       1       Device-status byte (reserved)
  * 8       1       ","
  * 9       8       Weight  (right-aligned ASCII, e.g. "  110.900")
  * 17      2       Unit    (e.g. "kg")
@@ -105,13 +103,9 @@ public final class ScaleProtocol {
         // Bytes [17, 19): typically "kg" or "lb"
         final String unit = packet.substring(17, 19).strip();
 
-        // ── Lamp-flags byte ─────────────────────────────────────────────────
-        // Byte [7]: bit-field encoding which indicator lamps are lit.
-        final int lampByte = extractLampByte(packet);
-
         log.fine(() -> String.format(
-                "CAS parsed: status=%s weight=%.3f unit=%s type=%s lamp=0x%02X",
-                statusStr, weight, unit, weightType, lampByte));
+                "CAS parsed: status=%s weight=%.3f unit=%s type=%s",
+                statusStr, weight, unit, weightType));
 
         return new WeightReading(
                 deviceName,
@@ -120,8 +114,7 @@ public final class ScaleProtocol {
                 statusStr.equals("ST"),                  // stable
                 statusStr.equals("OL"),                  // overload
                 weightType.equals("NT") ? "net" : "gross",
-                packet,
-                decodeLampFlags(lampByte)
+                packet
         );
     }
 
@@ -192,7 +185,6 @@ public final class ScaleProtocol {
 
         // Type 5 only transmits confirmed-stable readings (device holds until
         // stable before sending), so stable=true and overload=false are always correct.
-        // No lamp-flag byte exists in this format.
         return new WeightReading(
                 deviceName,
                 roundTo3(weight),
@@ -200,8 +192,7 @@ public final class ScaleProtocol {
                 true,       // always stable — device only sends stable readings
                 false,      // overload not reported in Type 5 format
                 "gross",    // Type 5 provides gross weight only
-                chars,
-                Map.of()    // immutable empty map — no lamp flags in Type 5
+                chars
         );
     }
 
@@ -240,15 +231,6 @@ public final class ScaleProtocol {
      * Wrapped in try-catch so a future refactor that relaxes the length check
      * cannot silently propagate an exception into the receive thread.
      */
-    private static int extractLampByte(String packet) {
-        try {
-            return packet.charAt(7);
-        } catch (StringIndexOutOfBoundsException e) {
-            log.fine("CAS: lamp byte missing — packet was unexpectedly short");
-            return 0;
-        }
-    }
-
     /**
      * Extract the weight from a validated Type 5 frame (bytes [5, 11)).
      * Returns {@link Double#NaN} on failure — 0.0 is a valid measurement (empty platform).
@@ -266,28 +248,6 @@ public final class ScaleProtocol {
     // ─────────────────────────────────────────────────────────────────────────
     // Shared utilities
     // ─────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Decode the CAS lamp-flags byte into a named boolean map.
-     * <p>
-     * Bit layout (from CAS NT-500 protocol documentation):
-     * bit 0 (0x01) → zero indicator lamp
-     * bit 1 (0x02) → tare lamp
-     * bit 2 (0x04) → net weight lamp
-     * bit 6 (0x40) → hold lamp
-     * bit 7 (0x80) → stable lamp  (duplicates the "ST" prefix; useful for UI)
-     */
-    private static Map<String, Boolean> decodeLampFlags(int lamp) {
-        // Explicit initial capacity 8 (next power-of-2 above 5 entries) avoids
-        // HashMap's internal resize, which would allocate a larger backing array.
-        Map<String, Boolean> m = HashMap.newHashMap(8);
-        m.put("zero", (lamp & 0b00000001) != 0);
-        m.put("tare", (lamp & 0b00000010) != 0);
-        m.put("net", (lamp & 0b00000100) != 0);
-        m.put("hold", (lamp & 0b01000000) != 0);
-        m.put("stable", (lamp & 0b10000000) != 0);
-        return m;
-    }
 
     private static double roundTo3(double v) {
         return Math.round(v * 1000.0) / 1000.0;

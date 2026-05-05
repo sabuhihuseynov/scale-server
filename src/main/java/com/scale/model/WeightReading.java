@@ -1,8 +1,6 @@
 package com.scale.model;
 
 import java.time.Instant;
-import java.util.Collections;
-import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -52,13 +50,6 @@ public final class WeightReading {
      */
     public final String timestamp;
 
-    /**
-     * CAS lamp-flag byte decoded into named booleans.
-     * Keys: zero, tare, net, hold, stable.
-     * Empty map for Type 5 (device does not send lamp flags).
-     */
-    public final Map<String, Boolean> lampFlags;
-
     public WeightReading(
             String device,
             double weight,
@@ -66,8 +57,7 @@ public final class WeightReading {
             boolean stable,
             boolean overload,
             String weightType,
-            String raw,
-            Map<String, Boolean> lampFlags) {
+            String raw) {
 
         this.device = Objects.requireNonNull(device, "device");
         this.weight = weight;
@@ -77,8 +67,6 @@ public final class WeightReading {
         this.weightType = (weightType == null) ? "gross" : weightType;
         this.raw = (raw == null) ? "" : raw;
         this.timestamp = Instant.now().toString();
-        this.lampFlags = (lampFlags == null) ? Collections.emptyMap()
-                : Collections.unmodifiableMap(lampFlags);
     }
 
     @Override

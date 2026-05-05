@@ -197,7 +197,6 @@ public final class Main {
         payload.put("overload",   r.overload);
         payload.put("weightType", r.weightType);
         payload.put("timestamp",  r.timestamp);
-        payload.put("lampFlags",  r.lampFlags);
         return GSON.toJson(payload);
     }
 
