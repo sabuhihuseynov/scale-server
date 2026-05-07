@@ -109,35 +109,6 @@
             </plugin>
 
             <plugin>
-                <groupId>com.akathist.maven.plugins.launch4j</groupId>
-                <artifactId>launch4j-maven-plugin</artifactId>
-                <version>2.7.0</version>
-                <executions>
-                    <execution>
-                        <id>l4j-clui</id>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>launch4j</goal>
-                        </goals>
-                        <configuration>
-                            <headerType>gui</headerType>
-                            <outfile>${project.build.directory}/scale-server.exe</outfile>
-                            <jar>${project.build.directory}/${project.artifactId}-${project.version}-jar-with-dependencies.jar</jar>
-                            <errTitle>Scale Server Error</errTitle>
-
-                            <icon>${project.basedir}/src/main/resources/truck-scale.ico</icon>
-                            <classPath>
-                                <mainClass>com.scale.Main</mainClass>
-                            </classPath>
-                            <jre>
-                                <minVersion>21</minVersion>
-                            </jre>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-
-            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
@@ -150,4 +121,53 @@
 
         </plugins>
     </build>
+
+    <!--
+        Windows-only profile: runs jpackage after the fat JAR is built to produce
+        a self-contained app image at target/dist/ScaleServer/.
+        The image bundles a JRE — no Java installation required on the target machine.
+
+        To also produce a single-file installer (.exe):
+          1. Install WiX Toolset 3.x on the build machine
+          2. Change <type>APP_IMAGE</type> to <type>EXE</type>
+    -->
+    <profiles>
+        <profile>
+            <id>windows-package</id>
+            <activation>
+                <os>
+                    <family>windows</family>
+                </os>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.panteleyev</groupId>
+                        <artifactId>jpackage-maven-plugin</artifactId>
+                        <version>1.6.0</version>
+                        <configuration>
+                            <name>ScaleServer</name>
+                            <appVersion>${project.version}</appVersion>
+                            <vendor>PRODATA</vendor>
+                            <input>${project.build.directory}</input>
+                            <mainJar>${project.artifactId}-${project.version}-jar-with-dependencies.jar</mainJar>
+                            <destination>${project.build.directory}/dist</destination>
+                            <icon>${project.basedir}/src/main/resources/truck-scale.ico</icon>
+                            <type>APP_IMAGE</type>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>jpackage</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>jpackage</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>
