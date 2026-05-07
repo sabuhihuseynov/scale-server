@@ -61,19 +61,7 @@
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-controls</artifactId>
             <version>21</version>
-            <classifier>linux</classifier>
-        </dependency>
-        <dependency>
-            <groupId>org.openjfx</groupId>
-            <artifactId>javafx-controls</artifactId>
-            <version>21</version>
             <classifier>win</classifier>
-        </dependency>
-        <dependency>
-            <groupId>org.openjfx</groupId>
-            <artifactId>javafx-controls</artifactId>
-            <version>21</version>
-            <classifier>mac</classifier>
         </dependency>
     </dependencies>
 
@@ -153,7 +141,7 @@
                             <mainJar>${project.artifactId}-${project.version}-jar-with-dependencies.jar</mainJar>
                             <destination>${project.build.directory}/dist</destination>
                             <icon>${project.basedir}/src/main/resources/truck-scale.ico</icon>
-                            <type>APP_IMAGE</type>
+                            <type>EXE</type>
                         </configuration>
                         <executions>
                             <execution>
