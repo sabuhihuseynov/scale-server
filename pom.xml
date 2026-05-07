@@ -139,7 +139,7 @@
                             <vendor>PRODATA</vendor>
                             <input>${project.build.directory}</input>
                             <mainJar>${project.artifactId}-${project.version}-jar-with-dependencies.jar</mainJar>
-                            <destination>${project.build.directory}/dist</destination>
+                            <destination>${project.basedir}/dist</destination>
                             <icon>${project.basedir}/src/main/resources/truck-scale.ico</icon>
                             <type>EXE</type>
                         </configuration>
