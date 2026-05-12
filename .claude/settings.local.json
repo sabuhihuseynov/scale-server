@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Workspace\\\\learning\\\\scale-server\" -Recurse -Include \"*.java\", \"pom.xml\")",
+      "Bash(Select-Object FullName)"
+    ]
+  }
+}
