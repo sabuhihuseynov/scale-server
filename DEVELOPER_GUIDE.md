@@ -807,7 +807,7 @@ Both variants use the same response format. The only difference is the poll comm
 
 ---
 
-### TYPE5 (STX-framed burst)
+### Tunaylar (TYPE5, STX-framed burst)
 
 TYPE5 devices push frames continuously without being polled.
 
