@@ -925,7 +925,7 @@ mvn package
 |--------|------|
 | `maven-compiler-plugin` | Compiles with `--release 21` |
 | `maven-assembly-plugin` | Creates fat JAR with all dependencies merged |
-| `jpackage-maven-plugin` | Windows-only profile; wraps fat JAR as `.exe` via launch4j |
+| `jpackage-maven-plugin` | Windows-only profile; bundles fat JAR + JRE into a self-contained app image via JDK `jpackage` |
 
 **Fat JAR:**
 
@@ -939,13 +939,14 @@ mvn package
 
 JavaFX modules are included with all platform classifiers (`win`, `linux`, `mac`) so the fat JAR runs on any OS. A warning `"Unsupported JavaFX configuration"` is printed at startup — this is cosmetic and does not affect functionality. It is suppressed to `SEVERE` log level in the logging setup.
 
-**Windows `.exe`:**
+**JRE-bundled app image (Windows):**
 
-`jpackage-maven-plugin` (launch4j mode) wraps the fat JAR in a Windows PE executable. The manifest specifies `minVersion=21` — if the installed JRE is older, launch4j shows a clear "Java 21 required" dialog instead of a cryptic error.
+`jpackage-maven-plugin` invokes the JDK's built-in `jpackage` tool (type `APP_IMAGE`) to produce a self-contained application image at `dist/ScaleServer/`. The image contains a launcher executable and a trimmed JRE extracted from the build machine's JDK 21. The target machine does **not** need Java installed — copy the entire `dist/ScaleServer/` folder and double-click `ScaleServer.exe`.
 
 **Outputs after `mvn package`:**
 
-| File | Description |
+| Path | Description |
 |------|-------------|
 | `target/scale-server-1.0.0-jar-with-dependencies.jar` | Fat JAR — runs on any OS with JRE 21+ |
-| `target/scale-server.exe` | Windows executable — double-click launch |
+| `dist/ScaleServer/ScaleServer.exe` | Windows launcher with bundled JRE — no Java required |
+| `dist/ScaleServer/runtime/` | Trimmed JRE bundled by `jpackage` |

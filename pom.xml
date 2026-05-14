@@ -141,7 +141,7 @@
                             <mainJar>${project.artifactId}-${project.version}-jar-with-dependencies.jar</mainJar>
                             <destination>${project.basedir}/dist</destination>
                             <icon>${project.basedir}/src/main/resources/truck-scale.ico</icon>
-                            <type>EXE</type>
+                            <type>APP_IMAGE</type>
                         </configuration>
                         <executions>
                             <execution>
