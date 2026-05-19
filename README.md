@@ -16,7 +16,7 @@ Physical Scale → RS-232/USB → scale-server (:8435) → Browser / Frontend
 java -jar scale-server-1.0.0-jar-with-dependencies.jar
 ```
 
-On Windows, double-click `scale-server.exe`. A setup window opens — select your COM port and protocol, then click **Başla** (Start).
+On Windows, double-click `dist/ScaleServer/ScaleServer.exe`. A setup window opens — select your COM port and protocol, then click **Başla** (Start).
 
 **Connect from the browser:**
 
@@ -143,7 +143,11 @@ mvn package
 | Output | Description |
 |--------|-------------|
 | `target/scale-server-1.0.0-jar-with-dependencies.jar` | Fat JAR for any OS with Java 21 |
-| `target/scale-server.exe` | Windows executable via launch4j (requires JRE 21+) |
+| `dist/ScaleServer/` | Windows app image via jpackage — bundles a JRE, no Java installation required |
+
+The Windows app image is produced automatically on Windows by the `windows-package` Maven profile. To produce a single-file installer (`.exe`) instead, install WiX Toolset 3.x and change `<type>APP_IMAGE</type>` to `<type>EXE</type>` in `pom.xml`.
+
+**Deploying to a client machine:** The entire `dist/ScaleServer/` folder is self-contained — it bundles its own JRE. Simply copy the folder to the client computer (USB drive, network share, zip, etc.) and run `ScaleServer.exe` directly. No Java installation is required on the client machine.
 
 **Key dependencies:**
 
